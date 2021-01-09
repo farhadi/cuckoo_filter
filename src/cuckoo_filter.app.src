@@ -1,0 +1,14 @@
+{application, cuckoo_filter, [
+    {description, "A concurrent and mutable Cuckoo Filter for Erlang"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib
+    ]},
+    {env, []},
+    {modules, []},
+
+    {licenses, ["Apache 2.0"]},
+    {links, [{"Github", "https://github.com/farhadi/cuckoo_filter"}]}
+]}.
