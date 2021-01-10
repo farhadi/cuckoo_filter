@@ -1,5 +1,7 @@
 # Cuckoo Filter
 
+[![CI build status](https://github.com/farhadi/cuckoo_filter/workflows/CI/badge.svg)](https://github.com/farhadi/cuckoo_filter/actions?query=workflow%3ACI)
+
 A high-performance, concurrent, and mutable [Cuckoo Filter](https://www.cs.cmu.edu/~dga/papers/cuckoo-conext2014.pdf)
 implemented using [atomics](https://erlang.org/doc/man/atomics.html) for Erlang and Elixir.
 
