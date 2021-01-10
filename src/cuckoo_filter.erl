@@ -1,28 +1,64 @@
+%%%-------------------------------------------------------------------
+%% @doc High-performance, concurrent, and mutable Cuckoo Filter
+%% implemented using atomics for Erlang and Elixir.
+%% @end
+%%%-------------------------------------------------------------------
+
 -module(cuckoo_filter).
 
 -export([
-    new/1, new/2, new/3,
+    new/1, new/2,
     add/2, add/3,
     contains/2,
     delete/2, delete/3,
-    size/1,
     capacity/1,
+    size/1,
     export/1,
     import/2
 ]).
 
 -include("cuckoo_filter.hrl").
 
+-type cuckoo_filter() :: #cuckoo_filter{}.
+
+-export_type([cuckoo_filter/0]).
+
+-type options() :: [option()].
+-type option() ::
+    {fingerprint_size, 4 | 8 | 16 | 32}
+    | {bucket_size, pos_integer()}
+    | {max_evictions, non_neg_integer()}.
+
 %% Default configurations
 -define(DEFAULT_FINGERPRINT_SIZE, 16).
 -define(DEFAULT_BUCKET_SIZE, 4).
 -define(DEFAULT_EVICTIONS, 100).
 
+%% @equiv new(Capacity, [])
+-spec new(pos_integer()) -> cuckoo_filter().
 new(Capacity) ->
     new(Capacity, []).
 
-new(Capacity, Data) when is_binary(Data) ->
-    new(Capacity, Data, []);
+%% @doc Creates a new cuckoo filter with the given capacity and options
+%%
+%% Note that the actual capacity might be higher than the given capacity,
+%% because internally number of buckets in a cuckoo filter must be a power of 2.
+%%
+%% Possible options are:
+%% <ul>
+%% <li>`{fingerprint_size, FingerprintSize}'
+%% <p>FingerprintSize can be one of 4, 8, 16, 32 bits. Default fingerprint size is 16 bits.</p>
+%% </li>
+%% <li>`{bucket_size, BucketSize}'</li>
+%% <p>BucketSize must be a non negative integer, and the default value is 4.
+%% Higher bucket sizes can reduce insert time considerably since it reduces the number
+%% of relocations of existing fingerprints in occupied buckets, but it increases the
+%% lookup time, and false positive rate.</p>
+%% <li>`{max_evictions, MaxEvictions}'</li>
+%% <p> MaxEvictions indicates the maximum number of relocation attemps before giving up when
+%% inserting a new element.</p>
+%% </ul>
+-spec new(pos_integer(), options()) -> cuckoo_filter().
 new(Capacity, Opts) ->
     is_integer(Capacity) andalso Capacity > 0 orelse error(badarg),
     BucketSize = proplists:get_value(bucket_size, Opts, ?DEFAULT_BUCKET_SIZE),
@@ -41,45 +77,19 @@ new(Capacity, Opts) ->
         max_evictions = MaxEvictions
     }.
 
-new(Capacity, Data, Opts) when is_binary(Data) ->
-    Filter = new(Capacity, Opts),
-    case import(Filter, Data) of
-        ok ->
-            Filter;
-        {error, Error} ->
-            {error, Error}
-    end.
-
-import(#cuckoo_filter{buckets = Buckets} = Filter, Data) when is_binary(Data) ->
-    ByteSize = (maps:get(size, atomics:info(Buckets)) - 1) * 8,
-    case byte_size(Data) of
-        ByteSize ->
-            ok = write_lock(Filter, infinity),
-            import(Buckets, Data, 2),
-            release_write_lock(Filter);
-        _ ->
-            {error, invalid_data_size}
-    end.
-
-import(_Buckets, <<>>, _Index) ->
-    ok;
-import(Buckets, <<Atomic:64/big-unsigned-integer, Data/binary>>, Index) ->
-    atomics:put(Buckets, Index, Atomic),
-    import(Buckets, Data, Index + 1).
-
-export(#cuckoo_filter{buckets = Buckets} = Filter) ->
-    ok = write_lock(Filter, infinity),
-    AtomicsSize = maps:get(size, atomics:info(Buckets)),
-    Result = <<
-        <<(atomics:get(Buckets, I)):64/big-unsigned-integer>>
-        || I <- lists:seq(2, AtomicsSize)
-    >>,
-    release_write_lock(Filter),
-    Result.
-
+%% @equiv add(Filter, Data, infinity)
+-spec add(cuckoo_filter(), term()) -> ok | {error, not_enough_space}.
 add(Filter, Data) ->
     add(Filter, Data, infinity).
 
+%% @doc Adds data to the filter.
+%%
+%% Returns `ok' if the insertion was successful, but could return
+%% `{error, not_enough_space}', when the filter is nearing its capacity.
+%%
+%% When `LockTimeout' is given, it could return `{error, timeout}', if it
+%% can not acquire the lock within `LockTimeout' milliseconds.
+-spec add(cuckoo_filter(), term(), timeout()) -> ok | {error, not_enough_space | timeout}.
 add(
     #cuckoo_filter{fingerprint_size = FingerprintSize, num_buckets = NumBuckets} = Filter,
     Data,
@@ -100,6 +110,8 @@ add(
             end
     end.
 
+%% @doc Checks if data is in the filter.
+-spec contains(cuckoo_filter(), term()) -> boolean().
 contains(
     #cuckoo_filter{fingerprint_size = FingerprintSize, num_buckets = NumBuckets} = Filter,
     Data
@@ -107,9 +119,23 @@ contains(
     {Index, Fingerprint} = index_and_fingerprint(Data, FingerprintSize, NumBuckets),
     lookup_index(Filter, Index, Fingerprint).
 
+%% @equiv delete(Filter, Data, infinity)
+-spec delete(cuckoo_filter(), term()) -> ok | {error, not_found}.
 delete(Filter, Data) ->
     delete(Filter, Data, infinity).
 
+%% @doc Deletes data from the filter.
+%%
+%% Returns `ok' if the deletion was successful, and returns {error, not_found}
+%% if the element could not be found in the filter.
+%%
+%% When `LockTimeout' is given, it could return `{error, timeout}', if it
+%% can not acquire the lock within `LockTimeout' milliseconds.
+%%
+%% <b>Note:</b> A cuckoo filter can only delete items that are known to be
+%% inserted before. Deleting of non inserted items might lead to deletion of
+%% another random element.
+-spec delete(cuckoo_filter(), term(), timeout()) -> ok | {error, not_found | timeout}.
 delete(
     #cuckoo_filter{fingerprint_size = FingerprintSize, num_buckets = NumBuckets} =
         Filter,
@@ -132,11 +158,56 @@ delete(
             {error, timeout}
     end.
 
+%% @doc Returns the maximum capacity of the filter.
+-spec capacity(cuckoo_filter()) -> pos_integer().
 capacity(#cuckoo_filter{bucket_size = BucketSize, num_buckets = NumBuckets}) ->
     NumBuckets * BucketSize.
 
+%% @doc Returns number of items in the filter.
+-spec size(cuckoo_filter()) -> non_neg_integer().
 size(#cuckoo_filter{buckets = Buckets}) ->
     atomics:get(Buckets, 2).
+
+%% @doc Returns all buckets in the filter as a binary.
+%%
+%% Returned binary can be used to reconstruct the filter again, using
+%% {@link import/2} function.
+-spec export(cuckoo_filter()) -> binary().
+export(#cuckoo_filter{buckets = Buckets} = Filter) ->
+    ok = write_lock(Filter, infinity),
+    AtomicsSize = maps:get(size, atomics:info(Buckets)),
+    Result = <<
+        <<(atomics:get(Buckets, I)):64/big-unsigned-integer>>
+        || I <- lists:seq(2, AtomicsSize)
+    >>,
+    release_write_lock(Filter),
+    Result.
+
+%% @doc Imports filter data from a binary created using {@link export/1}.
+%%
+%% Returns ok if the import was successful, but could return {ok, invalid_data_size}
+%% if the size of the given binary does not match the size of the filter.
+-spec import(cuckoo_filter(), binary()) -> ok | {error, invalid_data_size}.
+import(#cuckoo_filter{buckets = Buckets} = Filter, Data) when is_binary(Data) ->
+    ByteSize = (maps:get(size, atomics:info(Buckets)) - 1) * 8,
+    case byte_size(Data) of
+        ByteSize ->
+            ok = write_lock(Filter, infinity),
+            import(Buckets, Data, 2),
+            release_write_lock(Filter);
+        _ ->
+            {error, invalid_data_size}
+    end.
+
+%%%-------------------------------------------------------------------
+%% Internal functions
+%%%-------------------------------------------------------------------
+
+import(_Buckets, <<>>, _Index) ->
+    ok;
+import(Buckets, <<Atomic:64/big-unsigned-integer, Data/binary>>, Index) ->
+    atomics:put(Buckets, Index, Atomic),
+    import(Buckets, Data, Index + 1).
 
 lookup_index(Filter, Index, Fingerprint) ->
     Bucket = read_bucket(Index, Filter),
@@ -240,7 +311,7 @@ force_insert(Filter, Index, Fingerprint, LockTimeout) ->
     end.
 
 force_insert(_Filter, _Index, _Fingerprint, _Evictions, _EvictionsList, 0) ->
-    {error, full};
+    {error, not_enough_space};
 force_insert(
     #cuckoo_filter{max_evictions = MaxEvictions},
     _Index,
@@ -249,7 +320,7 @@ force_insert(
     _EvictionsList,
     _Retry
 ) when map_size(Evictions) == MaxEvictions ->
-    {error, full};
+    {error, not_enough_space};
 force_insert(
     #cuckoo_filter{bucket_size = BucketSize, num_buckets = NumBuckets} = Filter,
     Index,
@@ -282,8 +353,7 @@ force_insert(
                                 Evictions#{Key => Fingerprint},
                                 [Key | EvictionsList],
                                 Evicted
-                            ),
-                            ok;
+                            );
                         {error, full} ->
                             force_insert(
                                 Filter,

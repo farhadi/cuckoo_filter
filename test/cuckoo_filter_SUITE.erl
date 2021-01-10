@@ -92,7 +92,9 @@ adding_to_a_full_filter(_Config) ->
     Filter = cuckoo_filter:new(rand:uniform(1000)),
     Capacity = cuckoo_filter:capacity(Filter),
     Items = random_items(Capacity + 1),
-    ?assert(lists:any(fun(I) -> cuckoo_filter:add(Filter, I) == {error, full} end, Items)),
+    ?assert(
+        lists:any(fun(I) -> cuckoo_filter:add(Filter, I) == {error, not_enough_space} end, Items)
+    ),
     ?assert(lists:any(fun(I) -> not cuckoo_filter:contains(Filter, I) end, Items)),
     ?assert(cuckoo_filter:size(Filter) < length(Items)).
 
@@ -137,9 +139,8 @@ import_export(_Config) ->
     ?assertEqual(byte_size(Exported), Capacity * 2 + 8),
     cuckoo_filter:import(Filter2, Exported),
     ?assert(lists:all(fun(I) -> cuckoo_filter:contains(Filter2, I) end, Items)),
-    Filter3 = cuckoo_filter:new(Capacity, Exported),
-    ?assert(lists:all(fun(I) -> cuckoo_filter:contains(Filter3, I) end, Items)),
-    ?assertEqual({error, invalid_data_size}, cuckoo_filter:new(Capacity * 2, Exported)).
+    Filter3 = cuckoo_filter:new(Capacity * 2),
+    ?assertEqual({error, invalid_data_size}, cuckoo_filter:import(Filter3, Exported)).
 
 concurrent_add(_Config) ->
     Filter = cuckoo_filter:new(100 + rand:uniform(1000)),

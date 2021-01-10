@@ -48,7 +48,7 @@ to relocate an element, we first insert it in its new place, then we remove it f
 old place, making sure the element is always available to lookups.
 
 In most cuckoo filter implementations, when an insert fails, the element is actually
-added to the filter, but some random other element gets removed, but in this
+added to the filter, but some other random element gets removed, but in this
 implementation, by using this eviction cache technique we can also avoid the removal
 of a random element when an insertion fails.
 
