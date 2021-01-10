@@ -69,22 +69,22 @@ In Erlang
 
 ```erlang
 Filter = cuckoo_filter:new(1000),
-ok = cuckoo_filter:add(1),
-true = cuckoo_filter:contains(1),
-false = cuckoo_filter:contains(2),
-ok = cuckoo_filter:delete(1),
-{error, not_found} = cuckoo_filter:delete(1).
+ok = cuckoo_filter:add(Filter, 1),
+true = cuckoo_filter:contains(Filter, 1),
+false = cuckoo_filter:contains(Filter, 2),
+ok = cuckoo_filter:delete(Filter, 1),
+{error, not_found} = cuckoo_filter:delete(Filter, 1).
 ```
 
 In Elixir
 
 ```elixir
 filter = :cuckoo_filter.new(1000)
-:ok = :cuckoo_filter.add(1)
-true = :cuckoo_filter.contains(1)
-false = :cuckoo_filter.contains(2)
-:ok = :cuckoo_filter.delete(1)
-{:error, :not_found} = :cuckoo_filter.delete(1)
+:ok = :cuckoo_filter.add(filter, 1)
+true = :cuckoo_filter.contains(filter, 1)
+false = :cuckoo_filter.contains(filter, 2)
+:ok = :cuckoo_filter.delete(filter, 1)
+{:error, :not_found} = :cuckoo_filter.delete(filter, 1)
 ```
 
 For more details, see the module documentation.
