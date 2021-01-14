@@ -2,6 +2,9 @@
 
 [![CI build status](https://github.com/farhadi/cuckoo_filter/workflows/CI/badge.svg)](https://github.com/farhadi/cuckoo_filter/actions?query=workflow%3ACI)
 [![codecov](https://codecov.io/gh/farhadi/cuckoo_filter/branch/main/graph/badge.svg)](https://codecov.io/gh/farhadi/cuckoo_filter)
+[![Hex docs](http://img.shields.io/badge/hex.pm-docs-green.svg?style=flat)](https://hexdocs.pm/cuckoo_filter)
+[![Hex Version](http://img.shields.io/hexpm/v/cuckoo_filter.svg?style=flat)](https://hex.pm/packages/cuckoo_filter)
+[![License](http://img.shields.io/hexpm/l/cuckoo_filter.svg?style=flat)](https://github.com/farhadi/cuckoo_filter/blob/master/LICENSE)
 
 A high-performance, concurrent, and mutable [Cuckoo Filter](https://www.cs.cmu.edu/~dga/papers/cuckoo-conext2014.pdf)
 implemented using [atomics](https://erlang.org/doc/man/atomics.html) for Erlang and Elixir.
