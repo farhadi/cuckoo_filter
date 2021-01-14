@@ -22,12 +22,12 @@ might fail when capacity is nearly full.
 ## Implementation
 
 In this implementation, filter data is stored in an atomics array, which is a fixed-size
-mutable array of 64 bits integers. By using atomics we can have fast and concurrent
+mutable array of 64-bit integers. By using atomics we can have fast and concurrent
 access to the filter for both reads and writes.
 
 To be able to update fingerprints atomically, this implementation only allows fingerprint
-sizes of 4, 8, 16, and 32 bits, so that multiple fingerprints can fit in a single 64 bits
-atomic integer.
+sizes of 4, 8, 16, 32, and 64 bits, so that multiple fingerprints can fit in a single
+64-bit atomic integer.
 
 In a Cuckoo Filter for each element, there are two buckets where it can be inserted. To
 insert an element when there is an empty slot available in one of the two buckets, we
@@ -58,12 +58,15 @@ loops before reaching the maximum number of evictions.
 The second integer in the array is used as an atomic counter to store the number of
 elements inserted in the filter. 
 
-For hashing, 64-bit variant of xxHash is used.
+For hashing, by default 64-bit variant of [XXH3](https://github.com/farhadi/xxh3) is used.
 
-Fingerprint size, bucket size, and the maximum number of evictions are configurable when
-creating a new filter.
+Fingerprint size, bucket size, hash function, and the maximum number of evictions are
+configurable when creating a new filter.
 
 ## Usage
+
+If you want to use the default xxh3 hash functions, you need to add
+[xxh3](https://hex.pm/packages/xxh3) to your deps.
 
 In Erlang
 

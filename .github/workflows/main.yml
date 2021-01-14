@@ -7,26 +7,49 @@ on:
     branches: [ main ]
 
 jobs:
-
   build:
-
+    name: OTP ${{matrix.otp}} / Rust ${{matrix.rust}}
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        otp:
+          - 21.3
+          - 22.3
+          - 23.2
 
-    container:
-      image: erlang:22.0.7
-
+        rust:
+          - 1.41.0
+          - stable
     steps:
-    - uses: actions/checkout@v2
-    - name: Check formatting
-      run: rebar3 fmt -c
-    - name: Compile
-      run: rebar3 compile
-    - name: Run dialyzer
-      run: rebar3 dialyzer
-    - name: Run tests
-      run: rebar3 ct -c
-    - name: Generate coverage reports
-      run: rebar3 covertool generate
-    - uses: codecov/codecov-action@v1
-      with:
-        file: _build/test/covertool/cuckoo_filter.covertool.xml
+      - name: Checkout sources
+        uses: actions/checkout@v1
+
+      - name: Install Erlang
+        uses: gleam-lang/setup-erlang@v1.1.2
+        with:
+          otp-version: ${{matrix.otp}}
+
+      - name: Install Rust ${{matrix.rust}} toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{matrix.rust}}
+          override: true
+
+      - name: Check formatting
+        run: rebar3 fmt -c
+
+      - name: Compile
+        run: rebar3 compile
+
+      - name: Run dialyzer
+        run: rebar3 dialyzer
+
+      - name: Run tests
+        run: rebar3 ct -c
+
+      - name: Generate coverage reports
+        run: rebar3 covertool generate
+
+      - uses: codecov/codecov-action@v1
+        with:
+          file: _build/test/covertool/cuckoo_filter.covertool.xml

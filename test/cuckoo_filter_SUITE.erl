@@ -11,6 +11,7 @@ all() ->
     [
         new_badargs,
         new,
+        new_with_hash128,
         new_with_args,
         add_contains_size,
         adding_to_a_full_filter,
@@ -39,13 +40,33 @@ new(_Config) ->
     Filter = cuckoo_filter:new(Capacity),
     RealCapacity = cuckoo_filter:capacity(Filter),
     NumBuckets = RealCapacity div 4,
+    HashFunction = fun xxh3:hash64/1,
     ?assert(RealCapacity >= Capacity),
     ?assertMatch(
         #cuckoo_filter{
             bucket_size = 4,
             num_buckets = NumBuckets,
             fingerprint_size = 16,
-            max_evictions = 100
+            max_evictions = 100,
+            hash_function = HashFunction
+        },
+        Filter
+    ).
+
+new_with_hash128(_Config) ->
+    Capacity = rand:uniform(1000),
+    Filter = cuckoo_filter:new(Capacity, [{fingerprint_size, 64}]),
+    RealCapacity = cuckoo_filter:capacity(Filter),
+    NumBuckets = RealCapacity div 4,
+    HashFunction = fun xxh3:hash128/1,
+    ?assert(RealCapacity >= Capacity),
+    ?assertMatch(
+        #cuckoo_filter{
+            bucket_size = 4,
+            num_buckets = NumBuckets,
+            fingerprint_size = 64,
+            max_evictions = 100,
+            hash_function = HashFunction
         },
         Filter
     ).
@@ -55,10 +76,12 @@ new_with_args(_Config) ->
     FingerprintSize = lists:nth(rand:uniform(4), [4, 8, 16, 32]),
     BucketSize = rand:uniform(16),
     MaxEvictions = rand:uniform(1000),
+    HashFunction = fun erlang:phash2/1,
     Filter = cuckoo_filter:new(Capacity, [
         {bucket_size, BucketSize},
         {fingerprint_size, FingerprintSize},
-        {max_evictions, MaxEvictions}
+        {max_evictions, MaxEvictions},
+        {hash_function, HashFunction}
     ]),
     RealCapacity = cuckoo_filter:capacity(Filter),
     NumBuckets = RealCapacity div BucketSize,
@@ -68,7 +91,8 @@ new_with_args(_Config) ->
             bucket_size = BucketSize,
             num_buckets = NumBuckets,
             fingerprint_size = FingerprintSize,
-            max_evictions = MaxEvictions
+            max_evictions = MaxEvictions,
+            hash_function = HashFunction
         },
         Filter
     ).

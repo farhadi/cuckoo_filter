@@ -25,9 +25,10 @@
 
 -type options() :: [option()].
 -type option() ::
-    {fingerprint_size, 4 | 8 | 16 | 32}
+    {fingerprint_size, 4 | 8 | 16 | 32 | 64}
     | {bucket_size, pos_integer()}
-    | {max_evictions, non_neg_integer()}.
+    | {max_evictions, non_neg_integer()}
+    | {hash_function, fun((binary()) -> non_neg_integer())}.
 
 %% Default configurations
 -define(DEFAULT_FINGERPRINT_SIZE, 16).
@@ -47,7 +48,8 @@ new(Capacity) ->
 %% Possible options are:
 %% <ul>
 %% <li>`{fingerprint_size, FingerprintSize}'
-%% <p>FingerprintSize can be one of 4, 8, 16, 32 bits. Default fingerprint size is 16 bits.</p>
+%% <p>FingerprintSize can be one of 4, 8, 16, 32, and 64 bits. Default fingerprint
+%% size is 16 bits.</p>
 %% </li>
 %% <li>`{bucket_size, BucketSize}'</li>
 %% <p>BucketSize must be a non negative integer, and the default value is 4.
@@ -55,8 +57,11 @@ new(Capacity) ->
 %% of relocations of existing fingerprints in occupied buckets, but it increases the
 %% lookup time, and false positive rate.</p>
 %% <li>`{max_evictions, MaxEvictions}'</li>
-%% <p> MaxEvictions indicates the maximum number of relocation attemps before giving up when
-%% inserting a new element.</p>
+%% <p> MaxEvictions indicates the maximum number of relocation attemps before giving up
+%% when inserting a new element.</p>
+%% <li>`{hash_function, HashFunction}'</li>
+%% <p> You can specify a custom hash function that accepts a binary as argument and returns
+%% hash value as an integer.</p>
 %% </ul>
 -spec new(pos_integer(), options()) -> cuckoo_filter().
 new(Capacity, Opts) ->
@@ -64,9 +69,14 @@ new(Capacity, Opts) ->
     BucketSize = proplists:get_value(bucket_size, Opts, ?DEFAULT_BUCKET_SIZE),
     is_integer(BucketSize) andalso BucketSize > 0 orelse error(badarg),
     FingerprintSize = proplists:get_value(fingerprint_size, Opts, ?DEFAULT_FINGERPRINT_SIZE),
-    lists:member(FingerprintSize, [4, 8, 16, 32]) orelse error(badarg),
+    lists:member(FingerprintSize, [4, 8, 16, 32, 64]) orelse error(badarg),
     MaxEvictions = proplists:get_value(max_evictions, Opts, ?DEFAULT_EVICTIONS),
     is_integer(MaxEvictions) andalso MaxEvictions >= 0 orelse error(badarg),
+    HashFunction = proplists:get_value(
+        hash_function,
+        Opts,
+        default_hash_function(BucketSize + FingerprintSize)
+    ),
     NumBuckets = 1 bsl ceil(math:log2(Capacity / BucketSize)),
     AtomicsSize = ceil(NumBuckets * BucketSize * FingerprintSize / 64) + 2,
     #cuckoo_filter{
@@ -74,7 +84,8 @@ new(Capacity, Opts) ->
         num_buckets = NumBuckets,
         bucket_size = BucketSize,
         fingerprint_size = FingerprintSize,
-        max_evictions = MaxEvictions
+        max_evictions = MaxEvictions,
+        hash_function = HashFunction
     }.
 
 %% @equiv add(Filter, Data, infinity)
@@ -91,16 +102,20 @@ add(Filter, Data) ->
 %% can not acquire the lock within `LockTimeout' milliseconds.
 -spec add(cuckoo_filter(), term(), timeout()) -> ok | {error, not_enough_space | timeout}.
 add(
-    #cuckoo_filter{fingerprint_size = FingerprintSize, num_buckets = NumBuckets} = Filter,
+    Filter = #cuckoo_filter{
+        fingerprint_size = FingerprintSize,
+        num_buckets = NumBuckets,
+        hash_function = HashFunction
+    },
     Data,
     LockTimeout
 ) ->
-    {Index, Fingerprint} = index_and_fingerprint(Data, FingerprintSize, NumBuckets),
+    {Index, Fingerprint} = index_and_fingerprint(Data, FingerprintSize, NumBuckets, HashFunction),
     case insert_at_index(Filter, Index, Fingerprint) of
         ok ->
             ok;
         {error, full} ->
-            AltIndex = alt_index(Index, Fingerprint, NumBuckets),
+            AltIndex = alt_index(Index, Fingerprint, NumBuckets, HashFunction),
             case insert_at_index(Filter, AltIndex, Fingerprint) of
                 ok ->
                     ok;
@@ -113,10 +128,14 @@ add(
 %% @doc Checks if data is in the filter.
 -spec contains(cuckoo_filter(), term()) -> boolean().
 contains(
-    #cuckoo_filter{fingerprint_size = FingerprintSize, num_buckets = NumBuckets} = Filter,
+    Filter = #cuckoo_filter{
+        fingerprint_size = FingerprintSize,
+        num_buckets = NumBuckets,
+        hash_function = HashFunction
+    },
     Data
 ) ->
-    {Index, Fingerprint} = index_and_fingerprint(Data, FingerprintSize, NumBuckets),
+    {Index, Fingerprint} = index_and_fingerprint(Data, FingerprintSize, NumBuckets, HashFunction),
     lookup_index(Filter, Index, Fingerprint).
 
 %% @equiv delete(Filter, Data, infinity)
@@ -137,19 +156,27 @@ delete(Filter, Data) ->
 %% another random element.
 -spec delete(cuckoo_filter(), term(), timeout()) -> ok | {error, not_found | timeout}.
 delete(
-    #cuckoo_filter{fingerprint_size = FingerprintSize, num_buckets = NumBuckets} =
-        Filter,
+    Filter = #cuckoo_filter{
+        fingerprint_size = FingerprintSize,
+        num_buckets = NumBuckets,
+        hash_function = HashFunction
+    },
     Data,
     LockTimeout
 ) ->
     case write_lock(Filter, LockTimeout) of
         ok ->
-            {Index, Fingerprint} = index_and_fingerprint(Data, FingerprintSize, NumBuckets),
+            {Index, Fingerprint} = index_and_fingerprint(
+                Data,
+                FingerprintSize,
+                NumBuckets,
+                HashFunction
+            ),
             case delete_fingerprint(Filter, Fingerprint, Index) of
                 ok ->
                     release_write_lock(Filter);
                 {error, not_found} ->
-                    AltIndex = alt_index(Index, Fingerprint, NumBuckets),
+                    AltIndex = alt_index(Index, Fingerprint, NumBuckets, HashFunction),
                     Result = delete_fingerprint(Filter, Fingerprint, AltIndex),
                     release_write_lock(Filter),
                     Result
@@ -173,7 +200,7 @@ size(#cuckoo_filter{buckets = Buckets}) ->
 %% Returned binary can be used to reconstruct the filter again, using
 %% {@link import/2} function.
 -spec export(cuckoo_filter()) -> binary().
-export(#cuckoo_filter{buckets = Buckets} = Filter) ->
+export(Filter = #cuckoo_filter{buckets = Buckets}) ->
     ok = write_lock(Filter, infinity),
     AtomicsSize = maps:get(size, atomics:info(Buckets)),
     Result = <<
@@ -188,7 +215,7 @@ export(#cuckoo_filter{buckets = Buckets} = Filter) ->
 %% Returns ok if the import was successful, but could return {ok, invalid_data_size}
 %% if the size of the given binary does not match the size of the filter.
 -spec import(cuckoo_filter(), binary()) -> ok | {error, invalid_data_size}.
-import(#cuckoo_filter{buckets = Buckets} = Filter, Data) when is_binary(Data) ->
+import(Filter = #cuckoo_filter{buckets = Buckets}, Data) when is_binary(Data) ->
     ByteSize = (maps:get(size, atomics:info(Buckets)) - 1) * 8,
     case byte_size(Data) of
         ByteSize ->
@@ -202,6 +229,11 @@ import(#cuckoo_filter{buckets = Buckets} = Filter, Data) when is_binary(Data) ->
 %%%-------------------------------------------------------------------
 %% Internal functions
 %%%-------------------------------------------------------------------
+
+default_hash_function(Size) when Size > 64 ->
+    fun xxh3:hash128/1;
+default_hash_function(_Size) ->
+    fun xxh3:hash64/1.
 
 import(_Buckets, <<>>, _Index) ->
     ok;
@@ -218,8 +250,13 @@ lookup_index(Filter, Index, Fingerprint) ->
             lookup_alt_index(Filter, Index, Fingerprint, Bucket)
     end.
 
-lookup_alt_index(#cuckoo_filter{num_buckets = NumBuckets} = Filter, Index, Fingerprint, Bucket) ->
-    AltIndex = alt_index(Index, Fingerprint, NumBuckets),
+lookup_alt_index(
+    Filter = #cuckoo_filter{num_buckets = NumBuckets, hash_function = HashFunction},
+    Index,
+    Fingerprint,
+    Bucket
+) ->
+    AltIndex = alt_index(Index, Fingerprint, NumBuckets, HashFunction),
     AltBucket = read_bucket(AltIndex, Filter),
     case lists:member(Fingerprint, AltBucket) of
         true ->
@@ -240,11 +277,6 @@ delete_fingerprint(Filter, Fingerprint, Index) ->
             {error, not_found}
     end.
 
-hash(Data) when is_binary(Data) ->
-    xxhash:hash64(Data);
-hash(Data) ->
-    hash(term_to_binary(Data)).
-
 fingerprint(Hash, FingerprintSize) ->
     case Hash band (1 bsl FingerprintSize - 1) of
         0 ->
@@ -253,14 +285,16 @@ fingerprint(Hash, FingerprintSize) ->
             Fingerprint
     end.
 
-index_and_fingerprint(Data, FingerprintSize, NumBuckets) ->
-    Hash = hash(Data),
+index_and_fingerprint(Data, FingerprintSize, NumBuckets, HashFunction) when is_binary(Data) ->
+    Hash = HashFunction(Data),
     Fingerprint = fingerprint(Hash, FingerprintSize),
     Index = (Hash bsr FingerprintSize) rem NumBuckets,
-    {Index, Fingerprint}.
+    {Index, Fingerprint};
+index_and_fingerprint(Data, FingerprintSize, NumBuckets, HashFunction) ->
+    index_and_fingerprint(term_to_binary(Data), FingerprintSize, NumBuckets, HashFunction).
 
-alt_index(Index, Fingerprint, NumBuckets) ->
-    Index bxor hash(Fingerprint) rem NumBuckets.
+alt_index(Index, Fingerprint, NumBuckets, HashFunction) ->
+    Index bxor HashFunction(binary:encode_unsigned(Fingerprint)) rem NumBuckets.
 
 atomic_index(BitIndex) ->
     BitIndex div 64 + 3.
@@ -322,7 +356,11 @@ force_insert(
 ) when map_size(Evictions) == MaxEvictions ->
     {error, not_enough_space};
 force_insert(
-    #cuckoo_filter{bucket_size = BucketSize, num_buckets = NumBuckets} = Filter,
+    Filter = #cuckoo_filter{
+        bucket_size = BucketSize,
+        num_buckets = NumBuckets,
+        hash_function = HashFunction
+    },
     Index,
     Fingerprint,
     Evictions,
@@ -340,7 +378,7 @@ force_insert(
                     force_insert(Filter, Index, Fingerprint, Evictions, EvictionsList, BucketSize)
             end;
         Evicted ->
-            AltIndex = alt_index(Index, Evicted, NumBuckets),
+            AltIndex = alt_index(Index, Evicted, NumBuckets, HashFunction),
             Key = {Index, SubIndex},
             if
                 is_map_key(Key, Evictions) ->
@@ -409,11 +447,11 @@ read_bucket(
     [F || <<F:FingerprintSize/big-unsigned-integer>> <= Bucket].
 
 update_in_bucket(
-    #cuckoo_filter{
+    Filter = #cuckoo_filter{
         buckets = Buckets,
         bucket_size = BucketSize,
         fingerprint_size = FingerprintSize
-    } = Filter,
+    },
     Index,
     SubIndex,
     OldValue,
