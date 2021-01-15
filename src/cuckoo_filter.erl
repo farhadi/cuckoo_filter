@@ -77,7 +77,7 @@ new(Capacity, Opts) ->
         Opts,
         default_hash_function(BucketSize + FingerprintSize)
     ),
-    NumBuckets = 1 bsl ceil(math:log2(Capacity / BucketSize)),
+    NumBuckets = 1 bsl ceil(math:log2(ceil(Capacity / BucketSize))),
     AtomicsSize = ceil(NumBuckets * BucketSize * FingerprintSize / 64) + 2,
     #cuckoo_filter{
         buckets = atomics:new(AtomicsSize, [{signed, false}]),

@@ -11,6 +11,7 @@ all() ->
     [
         new_badargs,
         new,
+        new_capacity,
         new_with_hash128,
         new_with_args,
         add_contains_size,
@@ -51,6 +52,16 @@ new(_Config) ->
             hash_function = HashFunction
         },
         Filter
+    ).
+
+new_capacity(_Config) ->
+    lists:foreach(
+        fun(Capacity) ->
+            Filter = cuckoo_filter:new(Capacity),
+            RealCapacity = cuckoo_filter:capacity(Filter),
+            ?assert(RealCapacity >= Capacity)
+        end,
+        lists:seq(1, 10000)
     ).
 
 new_with_hash128(_Config) ->
