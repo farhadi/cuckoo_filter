@@ -11,6 +11,10 @@
     add/2, add/3,
     contains/2,
     delete/2, delete/3,
+    hash/2,
+    add_hash/2, add_hash/3,
+    contains_hash/2,
+    delete_hash/2, delete_hash/3,
     capacity/1,
     size/1,
     export/1,
@@ -20,15 +24,16 @@
 -include("cuckoo_filter.hrl").
 
 -type cuckoo_filter() :: #cuckoo_filter{}.
+-type hash() :: non_neg_integer().
 
--export_type([cuckoo_filter/0]).
+-export_type([cuckoo_filter/0, hash/0]).
 
 -type options() :: [option()].
 -type option() ::
     {fingerprint_size, 4 | 8 | 16 | 32 | 64}
     | {bucket_size, pos_integer()}
     | {max_evictions, non_neg_integer()}
-    | {hash_function, fun((binary()) -> non_neg_integer())}.
+    | {hash_function, fun((binary()) -> hash())}.
 
 %% Default configurations
 -define(DEFAULT_FINGERPRINT_SIZE, 16).
@@ -91,7 +96,12 @@ new(Capacity, Opts) ->
 %% @equiv add(Filter, Data, infinity)
 -spec add(cuckoo_filter(), term()) -> ok | {error, not_enough_space}.
 add(Filter, Data) ->
-    add(Filter, Data, infinity).
+    add_hash(Filter, hash(Filter, Data), infinity).
+
+%% @equiv add_hash(Filter, Data, infinity)
+-spec add_hash(cuckoo_filter(), hash()) -> ok | {error, not_enough_space}.
+add_hash(Filter, Hash) ->
+    add_hash(Filter, Hash, infinity).
 
 %% @doc Adds data to the filter.
 %%
@@ -101,16 +111,23 @@ add(Filter, Data) ->
 %% When `LockTimeout' is given, it could return `{error, timeout}', if it
 %% can not acquire the lock within `LockTimeout' milliseconds.
 -spec add(cuckoo_filter(), term(), timeout()) -> ok | {error, not_enough_space | timeout}.
-add(
+add(Filter, Data, LockTimeout) ->
+    add_hash(Filter, hash(Filter, Data), LockTimeout).
+
+%% @doc Adds data to the filter by its hash.
+%%
+%% Same as {@link add/3} except that it uses hash of data instead of data.
+-spec add_hash(cuckoo_filter(), hash(), timeout()) -> ok | {error, not_enough_space | timeout}.
+add_hash(
     Filter = #cuckoo_filter{
         fingerprint_size = FingerprintSize,
         num_buckets = NumBuckets,
         hash_function = HashFunction
     },
-    Data,
+    Hash,
     LockTimeout
 ) ->
-    {Index, Fingerprint} = index_and_fingerprint(Data, FingerprintSize, NumBuckets, HashFunction),
+    {Index, Fingerprint} = index_and_fingerprint(Hash, FingerprintSize, NumBuckets),
     case insert_at_index(Filter, Index, Fingerprint) of
         ok ->
             ok;
@@ -127,21 +144,30 @@ add(
 
 %% @doc Checks if data is in the filter.
 -spec contains(cuckoo_filter(), term()) -> boolean().
-contains(
+contains(Filter, Data) ->
+    contains_hash(Filter, hash(Filter, Data)).
+
+%% @doc Checks if data is in the filter by its hash.
+-spec contains_hash(cuckoo_filter(), hash()) -> boolean().
+contains_hash(
     Filter = #cuckoo_filter{
         fingerprint_size = FingerprintSize,
-        num_buckets = NumBuckets,
-        hash_function = HashFunction
+        num_buckets = NumBuckets
     },
-    Data
+    Hash
 ) ->
-    {Index, Fingerprint} = index_and_fingerprint(Data, FingerprintSize, NumBuckets, HashFunction),
+    {Index, Fingerprint} = index_and_fingerprint(Hash, FingerprintSize, NumBuckets),
     lookup_index(Filter, Index, Fingerprint).
 
 %% @equiv delete(Filter, Data, infinity)
 -spec delete(cuckoo_filter(), term()) -> ok | {error, not_found}.
 delete(Filter, Data) ->
-    delete(Filter, Data, infinity).
+    delete_hash(Filter, hash(Filter, Data), infinity).
+
+%% @equiv delete_hash(Filter, Data, infinity)
+-spec delete_hash(cuckoo_filter(), hash()) -> ok | {error, not_found}.
+delete_hash(Filter, Hash) ->
+    delete_hash(Filter, Hash, infinity).
 
 %% @doc Deletes data from the filter.
 %%
@@ -155,23 +181,25 @@ delete(Filter, Data) ->
 %% inserted before. Deleting of non inserted items might lead to deletion of
 %% another random element.
 -spec delete(cuckoo_filter(), term(), timeout()) -> ok | {error, not_found | timeout}.
-delete(
+delete(Filter, Data, LockTimeout) ->
+    delete_hash(Filter, hash(Filter, Data), LockTimeout).
+
+%% @doc Deletes data from the filter by its hash.
+%%
+%% Same as {@link delete/3} except that it uses hash of data instead of data.
+-spec delete_hash(cuckoo_filter(), hash(), timeout()) -> ok | {error, not_found | timeout}.
+delete_hash(
     Filter = #cuckoo_filter{
         fingerprint_size = FingerprintSize,
         num_buckets = NumBuckets,
         hash_function = HashFunction
     },
-    Data,
+    Hash,
     LockTimeout
 ) ->
+    {Index, Fingerprint} = index_and_fingerprint(Hash, FingerprintSize, NumBuckets),
     case write_lock(Filter, LockTimeout) of
         ok ->
-            {Index, Fingerprint} = index_and_fingerprint(
-                Data,
-                FingerprintSize,
-                NumBuckets,
-                HashFunction
-            ),
             case delete_fingerprint(Filter, Fingerprint, Index) of
                 ok ->
                     release_write_lock(Filter);
@@ -184,6 +212,13 @@ delete(
         {error, timeout} ->
             {error, timeout}
     end.
+
+%% @doc Returns the hash value of data using the hash function of the filter.
+-spec hash(cuckoo_filter(), term()) -> hash().
+hash(#cuckoo_filter{hash_function = HashFunction}, Data) when is_binary(Data) ->
+    HashFunction(Data);
+hash(#cuckoo_filter{hash_function = HashFunction}, Data) ->
+    HashFunction(term_to_binary(Data)).
 
 %% @doc Returns the maximum capacity of the filter.
 -spec capacity(cuckoo_filter()) -> pos_integer().
@@ -205,7 +240,7 @@ export(Filter = #cuckoo_filter{buckets = Buckets}) ->
     AtomicsSize = maps:get(size, atomics:info(Buckets)),
     Result = <<
         <<(atomics:get(Buckets, I)):64/big-unsigned-integer>>
-        || I <- lists:seq(2, AtomicsSize)
+     || I <- lists:seq(2, AtomicsSize)
     >>,
     release_write_lock(Filter),
     Result.
@@ -285,13 +320,10 @@ fingerprint(Hash, FingerprintSize) ->
             Fingerprint
     end.
 
-index_and_fingerprint(Data, FingerprintSize, NumBuckets, HashFunction) when is_binary(Data) ->
-    Hash = HashFunction(Data),
+index_and_fingerprint(Hash, FingerprintSize, NumBuckets) ->
     Fingerprint = fingerprint(Hash, FingerprintSize),
     Index = (Hash bsr FingerprintSize) rem NumBuckets,
-    {Index, Fingerprint};
-index_and_fingerprint(Data, FingerprintSize, NumBuckets, HashFunction) ->
-    index_and_fingerprint(term_to_binary(Data), FingerprintSize, NumBuckets, HashFunction).
+    {Index, Fingerprint}.
 
 alt_index(Index, Fingerprint, NumBuckets, HashFunction) ->
     Index bxor HashFunction(binary:encode_unsigned(Fingerprint)) rem NumBuckets.
@@ -442,7 +474,7 @@ read_bucket(
     EndIndex = atomic_index(BitIndex + BucketBitSize - 1),
     <<_:SkipBits, Bucket:BucketBitSize/bitstring, _/bitstring>> = <<
         <<(atomics:get(Buckets, I)):64/big-unsigned-integer>>
-        || I <- lists:seq(AtomicIndex, EndIndex)
+     || I <- lists:seq(AtomicIndex, EndIndex)
     >>,
     [F || <<F:FingerprintSize/big-unsigned-integer>> <= Bucket].
 

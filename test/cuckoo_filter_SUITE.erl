@@ -184,14 +184,14 @@ concurrent_add(_Config) ->
     Parent = self(),
     [
         spawn(fun() -> Parent ! [I || I <- Items, cuckoo_filter:add(Filter, I) == ok] end)
-        || Items <- ItemsGroup
+     || Items <- ItemsGroup
     ],
     [
         receive
             Added ->
                 ?assert(lists:all(fun(I) -> cuckoo_filter:contains(Filter, I) end, Added))
         end
-        || _ <- ItemsGroup
+     || _ <- ItemsGroup
     ].
 
 concurrent_delete(_Config) ->
@@ -219,7 +219,7 @@ concurrent_add_delete(_Config) ->
     end),
     ?assertEqual([], [
         I
-        || I <- Added, _ <- lists:seq(1, 250), not cuckoo_filter:contains(Filter, I)
+     || I <- Added, _ <- lists:seq(1, 250), not cuckoo_filter:contains(Filter, I)
     ]),
     receive
         {'DOWN', Ref, process, Pid, normal} -> ok
