@@ -41,12 +41,14 @@ new(_Config) ->
     Filter = cuckoo_filter:new(Capacity),
     RealCapacity = cuckoo_filter:capacity(Filter),
     NumBuckets = RealCapacity div 4,
+    MaxHash = NumBuckets bsl 16 - 1,
     HashFunction = fun xxh3:hash64/1,
     ?assert(RealCapacity >= Capacity),
     ?assertMatch(
         #cuckoo_filter{
             bucket_size = 4,
             num_buckets = NumBuckets,
+            max_hash = MaxHash,
             fingerprint_size = 16,
             max_evictions = 100,
             hash_function = HashFunction
@@ -69,12 +71,14 @@ new_with_hash128(_Config) ->
     Filter = cuckoo_filter:new(Capacity, [{fingerprint_size, 64}]),
     RealCapacity = cuckoo_filter:capacity(Filter),
     NumBuckets = RealCapacity div 4,
+    MaxHash = NumBuckets bsl 64 - 1,
     HashFunction = fun xxh3:hash128/1,
     ?assert(RealCapacity >= Capacity),
     ?assertMatch(
         #cuckoo_filter{
             bucket_size = 4,
             num_buckets = NumBuckets,
+            max_hash = MaxHash,
             fingerprint_size = 64,
             max_evictions = 100,
             hash_function = HashFunction
@@ -96,11 +100,13 @@ new_with_args(_Config) ->
     ]),
     RealCapacity = cuckoo_filter:capacity(Filter),
     NumBuckets = RealCapacity div BucketSize,
+    MaxHash = NumBuckets bsl FingerprintSize - 1,
     ?assert(RealCapacity >= Capacity),
     ?assertMatch(
         #cuckoo_filter{
             bucket_size = BucketSize,
             num_buckets = NumBuckets,
+            max_hash = MaxHash,
             fingerprint_size = FingerprintSize,
             max_evictions = MaxEvictions,
             hash_function = HashFunction
