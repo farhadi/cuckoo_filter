@@ -18,7 +18,7 @@ jobs:
           - 23.2
 
         rust:
-          - 1.41.0
+          - 1.47.0
           - stable
     steps:
       - name: Checkout sources
