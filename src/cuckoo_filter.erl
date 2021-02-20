@@ -83,10 +83,12 @@ new(Capacity, Opts) ->
         default_hash_function(BucketSize + FingerprintSize)
     ),
     NumBuckets = 1 bsl ceil(math:log2(ceil(Capacity / BucketSize))),
+    MaxHash = NumBuckets bsl FingerprintSize - 1,
     AtomicsSize = ceil(NumBuckets * BucketSize * FingerprintSize / 64) + 2,
     #cuckoo_filter{
         buckets = atomics:new(AtomicsSize, [{signed, false}]),
         num_buckets = NumBuckets,
+        max_hash = MaxHash,
         bucket_size = BucketSize,
         fingerprint_size = FingerprintSize,
         max_evictions = MaxEvictions,
@@ -127,7 +129,7 @@ add_hash(
     Hash,
     LockTimeout
 ) ->
-    {Index, Fingerprint} = index_and_fingerprint(Hash, FingerprintSize, NumBuckets),
+    {Index, Fingerprint} = index_and_fingerprint(Hash, FingerprintSize),
     case insert_at_index(Filter, Index, Fingerprint) of
         ok ->
             ok;
@@ -149,14 +151,8 @@ contains(Filter, Data) ->
 
 %% @doc Checks if data is in the filter by its hash.
 -spec contains_hash(cuckoo_filter(), hash()) -> boolean().
-contains_hash(
-    Filter = #cuckoo_filter{
-        fingerprint_size = FingerprintSize,
-        num_buckets = NumBuckets
-    },
-    Hash
-) ->
-    {Index, Fingerprint} = index_and_fingerprint(Hash, FingerprintSize, NumBuckets),
+contains_hash(Filter = #cuckoo_filter{fingerprint_size = FingerprintSize}, Hash) ->
+    {Index, Fingerprint} = index_and_fingerprint(Hash, FingerprintSize),
     lookup_index(Filter, Index, Fingerprint).
 
 %% @equiv delete(Filter, Data, infinity)
@@ -197,7 +193,7 @@ delete_hash(
     Hash,
     LockTimeout
 ) ->
-    {Index, Fingerprint} = index_and_fingerprint(Hash, FingerprintSize, NumBuckets),
+    {Index, Fingerprint} = index_and_fingerprint(Hash, FingerprintSize),
     case write_lock(Filter, LockTimeout) of
         ok ->
             case delete_fingerprint(Filter, Fingerprint, Index) of
@@ -215,10 +211,10 @@ delete_hash(
 
 %% @doc Returns the hash value of data using the hash function of the filter.
 -spec hash(cuckoo_filter(), term()) -> hash().
-hash(#cuckoo_filter{hash_function = HashFunction}, Data) when is_binary(Data) ->
-    HashFunction(Data);
-hash(#cuckoo_filter{hash_function = HashFunction}, Data) ->
-    HashFunction(term_to_binary(Data)).
+hash(#cuckoo_filter{max_hash = MaxHash, hash_function = HashFunction}, Data) when is_binary(Data) ->
+    HashFunction(Data) band MaxHash;
+hash(Filter, Data) ->
+    hash(Filter, term_to_binary(Data)).
 
 %% @doc Returns the maximum capacity of the filter.
 -spec capacity(cuckoo_filter()) -> pos_integer().
@@ -313,16 +309,16 @@ delete_fingerprint(Filter, Fingerprint, Index) ->
     end.
 
 fingerprint(Hash, FingerprintSize) ->
-    case Hash band (1 bsl FingerprintSize - 1) of
+    case Hash rem (1 bsl FingerprintSize) of
         0 ->
             1;
         Fingerprint ->
             Fingerprint
     end.
 
-index_and_fingerprint(Hash, FingerprintSize, NumBuckets) ->
+index_and_fingerprint(Hash, FingerprintSize) ->
     Fingerprint = fingerprint(Hash, FingerprintSize),
-    Index = (Hash bsr FingerprintSize) rem NumBuckets,
+    Index = Hash bsr FingerprintSize,
     {Index, Fingerprint}.
 
 alt_index(Index, Fingerprint, NumBuckets, HashFunction) ->
