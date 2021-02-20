@@ -15,6 +15,7 @@ all() ->
         new_with_hash128,
         new_with_args,
         add_contains_size,
+        add_delete_contains_hash,
         adding_to_a_full_filter,
         delete,
         max_evictions,
@@ -124,10 +125,51 @@ add_contains_size(_Config) ->
         {max_evictions, MaxEvictions}
     ]),
     Capacity = cuckoo_filter:capacity(Filter),
-    Items = random_items(Capacity div 2),
+    Items = random_items(Capacity div 4),
     ?assert(lists:all(fun(I) -> cuckoo_filter:add(Filter, I) == ok end, Items)),
     ?assert(lists:all(fun(I) -> cuckoo_filter:contains(Filter, I) end, Items)),
     ?assertEqual(cuckoo_filter:size(Filter), length(Items)).
+
+add_delete_contains_hash(_Config) ->
+    FingerprintSize = lists:nth(rand:uniform(4), [4, 8, 16, 32]),
+    BucketSize = 1 + rand:uniform(10),
+    MaxEvictions = 10 + rand:uniform(1000),
+    Filter = cuckoo_filter:new(100 + rand:uniform(10000), [
+        {bucket_size, BucketSize},
+        {fingerprint_size, FingerprintSize},
+        {max_evictions, MaxEvictions}
+    ]),
+    Capacity = cuckoo_filter:capacity(Filter),
+    Items = random_items(Capacity div 4),
+    ?assert(
+        lists:all(
+            fun(I) -> cuckoo_filter:add_hash(Filter, cuckoo_filter:hash(Filter, I)) == ok end,
+            Items
+        )
+    ),
+    ?assert(
+        lists:all(
+            fun(I) -> cuckoo_filter:contains_hash(Filter, cuckoo_filter:hash(Filter, I)) end,
+            Items
+        )
+    ),
+    ?assert(lists:all(fun(I) -> cuckoo_filter:contains(Filter, I) end, Items)),
+    ?assert(
+        lists:all(
+            fun(I) -> cuckoo_filter:delete_hash(Filter, cuckoo_filter:hash(Filter, I)) == ok end,
+            Items
+        )
+    ),
+    ?assert(lists:all(fun(I) -> not cuckoo_filter:contains(Filter, I) end, Items)),
+    ?assert(
+        lists:all(
+            fun(I) ->
+                cuckoo_filter:delete_hash(Filter, cuckoo_filter:hash(Filter, I)) ==
+                    {error, not_found}
+            end,
+            Items
+        )
+    ).
 
 adding_to_a_full_filter(_Config) ->
     Filter = cuckoo_filter:new(rand:uniform(1000)),
