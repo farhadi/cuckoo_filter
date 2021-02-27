@@ -17,6 +17,7 @@ all() ->
         add_contains_size,
         add_delete_contains_hash,
         adding_to_a_full_filter,
+        adding_to_a_full_filter_by_force,
         delete,
         max_evictions,
         fingerprint_size,
@@ -24,6 +25,7 @@ all() ->
         concurrent_add,
         concurrent_delete,
         concurrent_add_delete,
+        concurrent_add_delete_with_0_evictions,
         concurrent_add_same_item,
         lock_timeout
     ].
@@ -181,6 +183,16 @@ adding_to_a_full_filter(_Config) ->
     ?assert(lists:any(fun(I) -> not cuckoo_filter:contains(Filter, I) end, Items)),
     ?assert(cuckoo_filter:size(Filter) < length(Items)).
 
+adding_to_a_full_filter_by_force(_Config) ->
+    Filter = cuckoo_filter:new(rand:uniform(1000)),
+    Capacity = cuckoo_filter:capacity(Filter),
+    Items = random_items(Capacity * 10),
+    lists:foreach(fun(I) -> cuckoo_filter:add(Filter, I) end, Items),
+    ?assertEqual(cuckoo_filter:size(Filter), Capacity),
+    {ok, {Index, Fingerprint}} = cuckoo_filter:add(Filter, extra, force),
+    ?assert(not cuckoo_filter:contains_fingerprint(Filter, Index, Fingerprint)),
+    ?assert(cuckoo_filter:contains(Filter, extra)).
+
 delete(_Config) ->
     Filter = cuckoo_filter:new(rand:uniform(1000)),
     Capacity = cuckoo_filter:capacity(Filter),
@@ -262,8 +274,18 @@ concurrent_add_delete(_Config) ->
     Items = random_items(Capacity),
     ExtraItems = random_items(Capacity * 10),
     Added = lists:takewhile(fun(I) -> cuckoo_filter:add(Filter, I) == ok end, Items),
-    {Pid, Ref} = spawn_monitor(fun() ->
-        [cuckoo_filter:delete(Filter, I) || I <- ExtraItems, cuckoo_filter:add(Filter, I) == ok]
+    {Pid, Ref} = spawn_monitor(fun F() ->
+        receive
+            exit ->
+                ok;
+            I ->
+                cuckoo_filter:delete(Filter, I),
+                F()
+        end
+    end),
+    spawn(fun() ->
+        [Pid ! I || I <- ExtraItems, cuckoo_filter:add(Filter, I) == ok],
+        Pid ! exit
     end),
     ?assertEqual([], [
         I
@@ -271,7 +293,36 @@ concurrent_add_delete(_Config) ->
     ]),
     receive
         {'DOWN', Ref, process, Pid, normal} -> ok
-    end.
+    end,
+    ?assertEqual(cuckoo_filter:size(Filter), length(Added)).
+
+concurrent_add_delete_with_0_evictions(_Config) ->
+    Capacity = 1024,
+    Filter = cuckoo_filter:new(Capacity, [{max_evictions, 0}]),
+    Items = random_items(Capacity),
+    ExtraItems = random_items(Capacity * 10),
+    Added = lists:takewhile(fun(I) -> cuckoo_filter:add(Filter, I) == ok end, Items),
+    {Pid, Ref} = spawn_monitor(fun F() ->
+        receive
+            exit ->
+                ok;
+            I ->
+                cuckoo_filter:delete(Filter, I),
+                F()
+        end
+    end),
+    spawn(fun() ->
+        [Pid ! I || I <- ExtraItems, cuckoo_filter:add(Filter, I) == ok],
+        Pid ! exit
+    end),
+    ?assertEqual([], [
+        I
+     || I <- Added, _ <- lists:seq(1, 250), not cuckoo_filter:contains(Filter, I)
+    ]),
+    receive
+        {'DOWN', Ref, process, Pid, normal} -> ok
+    end,
+    ?assertEqual(cuckoo_filter:size(Filter), length(Added)).
 
 concurrent_add_same_item(_Config) ->
     Filter = cuckoo_filter:new(100 + rand:uniform(1000)),
