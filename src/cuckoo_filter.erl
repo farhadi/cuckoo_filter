@@ -308,16 +308,8 @@ delete_fingerprint(Filter, Fingerprint, Index) ->
             {error, not_found}
     end.
 
-fingerprint(Hash, FingerprintSize) ->
-    case Hash rem (1 bsl FingerprintSize) of
-        0 ->
-            1;
-        Fingerprint ->
-            Fingerprint
-    end.
-
 index_and_fingerprint(Hash, FingerprintSize) ->
-    Fingerprint = fingerprint(Hash, FingerprintSize),
+    Fingerprint = Hash rem (1 bsl FingerprintSize - 1) + 1,
     Index = Hash bsr FingerprintSize,
     {Index, Fingerprint}.
 
@@ -341,6 +333,8 @@ insert_at_index(Filter, Index, Fingerprint) ->
             {error, full}
     end.
 
+write_lock(#cuckoo_filter{max_evictions = 0}, _) ->
+    ok;
 write_lock(#cuckoo_filter{buckets = Buckets}, infinity) ->
     write_lock(Buckets, infinity);
 write_lock(#cuckoo_filter{buckets = Buckets}, Timeout) ->
@@ -358,6 +352,8 @@ write_lock(Buckets, Timeout) ->
             end
     end.
 
+release_write_lock(#cuckoo_filter{max_evictions = 0}) ->
+    ok;
 release_write_lock(#cuckoo_filter{buckets = Buckets}) ->
     atomics:put(Buckets, 1, 0).
 
@@ -405,6 +401,8 @@ force_insert(
                 {error, full} ->
                     force_insert(Filter, Index, Fingerprint, Evictions, EvictionsList, BucketSize)
             end;
+        Fingerprint ->
+            force_insert(Filter, Index, Fingerprint, Evictions, EvictionsList, Retry - 1);
         Evicted ->
             AltIndex = alt_index(Index, Evicted, NumBuckets, HashFunction),
             Key = {Index, SubIndex},
