@@ -14,6 +14,7 @@
     hash/2,
     add_hash/2, add_hash/3,
     contains_hash/2,
+    contains_fingerprint/3,
     delete_hash/2, delete_hash/3,
     capacity/1,
     size/1,
@@ -28,6 +29,8 @@
 
 -export_type([cuckoo_filter/0, hash/0]).
 
+-type fingerprint() :: pos_integer().
+-type index() :: non_neg_integer().
 -type options() :: [option()].
 -type option() ::
     {fingerprint_size, 4 | 8 | 16 | 32 | 64}
@@ -95,31 +98,41 @@ new(Capacity, Opts) ->
         hash_function = HashFunction
     }.
 
-%% @equiv add(Filter, Data, infinity)
+%% @equiv add(Filter, Element, infinity)
 -spec add(cuckoo_filter(), term()) -> ok | {error, not_enough_space}.
-add(Filter, Data) ->
-    add_hash(Filter, hash(Filter, Data), infinity).
+add(Filter, Element) ->
+    add_hash(Filter, hash(Filter, Element), infinity).
 
-%% @equiv add_hash(Filter, Data, infinity)
+%% @equiv add_hash(Filter, Element, infinity)
 -spec add_hash(cuckoo_filter(), hash()) -> ok | {error, not_enough_space}.
 add_hash(Filter, Hash) ->
     add_hash(Filter, Hash, infinity).
 
-%% @doc Adds data to the filter.
+%% @doc Adds an element to a filter.
 %%
 %% Returns `ok' if the insertion was successful, but could return
 %% `{error, not_enough_space}', when the filter is nearing its capacity.
 %%
 %% When `LockTimeout' is given, it could return `{error, timeout}', if it
 %% can not acquire the lock within `LockTimeout' milliseconds.
--spec add(cuckoo_filter(), term(), timeout()) -> ok | {error, not_enough_space | timeout}.
-add(Filter, Data, LockTimeout) ->
-    add_hash(Filter, hash(Filter, Data), LockTimeout).
-
-%% @doc Adds data to the filter by its hash.
 %%
-%% Same as {@link add/3} except that it uses hash of data instead of data.
--spec add_hash(cuckoo_filter(), hash(), timeout()) -> ok | {error, not_enough_space | timeout}.
+%% If `force' is given as the 3rd argument, and there is no room for the element
+%% to be inserted, another random element is removed, and the removed element
+%% is returned as `{ok, {Index, Fingerprint}}'. In this case, elements are not
+%% relocated, and no lock is acquired.
+-spec add
+    (cuckoo_filter(), term(), timeout()) -> ok | {error, not_enough_space | timeout};
+    (cuckoo_filter(), term(), force) -> ok | {ok, Evicted :: {index(), fingerprint()}}.
+add(Filter, Element, LockTimeout) ->
+    add_hash(Filter, hash(Filter, Element), LockTimeout).
+
+%% @doc Adds an element to a filter by its hash.
+%%
+%% Same as {@link add/3} except that it accepts the hash of the element instead
+%% of the element.
+-spec add_hash
+    (cuckoo_filter(), hash(), timeout()) -> ok | {error, not_enough_space | timeout};
+    (cuckoo_filter(), hash(), force) -> ok | {ok, Evicted :: {index(), fingerprint()}}.
 add_hash(
     Filter = #cuckoo_filter{
         fingerprint_size = FingerprintSize,
@@ -140,32 +153,38 @@ add_hash(
                     ok;
                 {error, full} ->
                     RandIndex = element(rand:uniform(2), {Index, AltIndex}),
-                    force_insert(Filter, RandIndex, Fingerprint, LockTimeout)
+                    try_insert(Filter, RandIndex, Fingerprint, LockTimeout)
             end
     end.
 
-%% @doc Checks if data is in the filter.
+%% @doc Checks if an element is in a filter.
 -spec contains(cuckoo_filter(), term()) -> boolean().
-contains(Filter, Data) ->
-    contains_hash(Filter, hash(Filter, Data)).
+contains(Filter, Element) ->
+    contains_hash(Filter, hash(Filter, Element)).
 
-%% @doc Checks if data is in the filter by its hash.
+%% @doc Checks if an element is in a filter by its hash.
 -spec contains_hash(cuckoo_filter(), hash()) -> boolean().
 contains_hash(Filter = #cuckoo_filter{fingerprint_size = FingerprintSize}, Hash) ->
     {Index, Fingerprint} = index_and_fingerprint(Hash, FingerprintSize),
-    lookup_index(Filter, Index, Fingerprint).
+    contains_fingerprint(Filter, Index, Fingerprint).
 
-%% @equiv delete(Filter, Data, infinity)
+%% @doc Checks whether a filter contains a fingerprint at the given index or its alternative index.
+contains_fingerprint(Filter = #cuckoo_filter{max_evictions = 0}, Index, Fingerprint) ->
+    contains_fingerprint(Filter, Index, undefined, Fingerprint, 1);
+contains_fingerprint(Filter, Index, Fingerprint) ->
+    contains_fingerprint(Filter, Index, undefined, Fingerprint, 2).
+
+%% @equiv delete(Filter, Element, infinity)
 -spec delete(cuckoo_filter(), term()) -> ok | {error, not_found}.
-delete(Filter, Data) ->
-    delete_hash(Filter, hash(Filter, Data), infinity).
+delete(Filter, Element) ->
+    delete_hash(Filter, hash(Filter, Element), infinity).
 
-%% @equiv delete_hash(Filter, Data, infinity)
+%% @equiv delete_hash(Filter, Element, infinity)
 -spec delete_hash(cuckoo_filter(), hash()) -> ok | {error, not_found}.
 delete_hash(Filter, Hash) ->
     delete_hash(Filter, Hash, infinity).
 
-%% @doc Deletes data from the filter.
+%% @doc Deletes an element from a filter.
 %%
 %% Returns `ok' if the deletion was successful, and returns {error, not_found}
 %% if the element could not be found in the filter.
@@ -177,12 +196,13 @@ delete_hash(Filter, Hash) ->
 %% inserted before. Deleting of non inserted items might lead to deletion of
 %% another random element.
 -spec delete(cuckoo_filter(), term(), timeout()) -> ok | {error, not_found | timeout}.
-delete(Filter, Data, LockTimeout) ->
-    delete_hash(Filter, hash(Filter, Data), LockTimeout).
+delete(Filter, Element, LockTimeout) ->
+    delete_hash(Filter, hash(Filter, Element), LockTimeout).
 
-%% @doc Deletes data from the filter by its hash.
+%% @doc Deletes an element from a filter by its hash.
 %%
-%% Same as {@link delete/3} except that it uses hash of data instead of data.
+%% Same as {@link delete/3} except that it uses the hash of the element instead
+%% of the element.
 -spec delete_hash(cuckoo_filter(), hash(), timeout()) -> ok | {error, not_found | timeout}.
 delete_hash(
     Filter = #cuckoo_filter{
@@ -209,24 +229,26 @@ delete_hash(
             {error, timeout}
     end.
 
-%% @doc Returns the hash value of data using the hash function of the filter.
+%% @doc Returns the hash value of an element using the hash function of the filter.
 -spec hash(cuckoo_filter(), term()) -> hash().
-hash(#cuckoo_filter{max_hash = MaxHash, hash_function = HashFunction}, Data) when is_binary(Data) ->
-    HashFunction(Data) band MaxHash;
-hash(Filter, Data) ->
-    hash(Filter, term_to_binary(Data)).
+hash(#cuckoo_filter{max_hash = MaxHash, hash_function = HashFunction}, Element) when
+    is_binary(Element)
+->
+    HashFunction(Element) band MaxHash;
+hash(Filter, Element) ->
+    hash(Filter, term_to_binary(Element)).
 
-%% @doc Returns the maximum capacity of the filter.
+%% @doc Returns the maximum capacity of a filter.
 -spec capacity(cuckoo_filter()) -> pos_integer().
 capacity(#cuckoo_filter{bucket_size = BucketSize, num_buckets = NumBuckets}) ->
     NumBuckets * BucketSize.
 
-%% @doc Returns number of items in the filter.
+%% @doc Returns number of items in a filter.
 -spec size(cuckoo_filter()) -> non_neg_integer().
 size(#cuckoo_filter{buckets = Buckets}) ->
     atomics:get(Buckets, 2).
 
-%% @doc Returns all buckets in the filter as a binary.
+%% @doc Exports a filter as a binary.
 %%
 %% Returned binary can be used to reconstruct the filter again, using
 %% {@link import/2} function.
@@ -272,31 +294,25 @@ import(Buckets, <<Atomic:64/big-unsigned-integer, Data/binary>>, Index) ->
     atomics:put(Buckets, Index, Atomic),
     import(Buckets, Data, Index + 1).
 
-lookup_index(Filter, Index, Fingerprint) ->
+contains_fingerprint(
+    Filter = #cuckoo_filter{num_buckets = NumBuckets, hash_function = HashFunction},
+    undefined,
+    Index,
+    Fingerprint,
+    Retry
+) ->
+    AltIndex = alt_index(Index, Fingerprint, NumBuckets, HashFunction),
+    contains_fingerprint(Filter, AltIndex, Index, Fingerprint, Retry);
+contains_fingerprint(Filter, Index, _AltIndex, Fingerprint, 0) ->
+    Bucket = read_bucket(Index, Filter),
+    lists:member(Fingerprint, Bucket);
+contains_fingerprint(Filter, Index, AltIndex, Fingerprint, Retry) ->
     Bucket = read_bucket(Index, Filter),
     case lists:member(Fingerprint, Bucket) of
         true ->
             true;
         false ->
-            lookup_alt_index(Filter, Index, Fingerprint, Bucket)
-    end.
-
-lookup_alt_index(
-    Filter = #cuckoo_filter{num_buckets = NumBuckets, hash_function = HashFunction},
-    Index,
-    Fingerprint,
-    Bucket
-) ->
-    AltIndex = alt_index(Index, Fingerprint, NumBuckets, HashFunction),
-    AltBucket = read_bucket(AltIndex, Filter),
-    case lists:member(Fingerprint, AltBucket) of
-        true ->
-            true;
-        false ->
-            case read_bucket(Index, Filter) of
-                Bucket -> false;
-                _ -> lookup_index(Filter, Index, Fingerprint)
-            end
+            contains_fingerprint(Filter, AltIndex, Index, Fingerprint, Retry - 1)
     end.
 
 delete_fingerprint(Filter, Fingerprint, Index) ->
@@ -357,29 +373,49 @@ release_write_lock(#cuckoo_filter{max_evictions = 0}) ->
 release_write_lock(#cuckoo_filter{buckets = Buckets}) ->
     atomics:put(Buckets, 1, 0).
 
-force_insert(Filter, Index, Fingerprint, LockTimeout) ->
+try_insert(Filter = #cuckoo_filter{bucket_size = BucketSize}, Index, Fingerprint, force) ->
+    Bucket = read_bucket(Index, Filter),
+    case find_in_bucket(Bucket, 0) of
+        {ok, SubIndex} ->
+            case update_in_bucket(Filter, Index, SubIndex, 0, Fingerprint) of
+                ok -> ok;
+                {error, outdated} -> try_insert(Filter, Index, Fingerprint, force)
+            end;
+        {error, not_found} ->
+            SubIndex = rand:uniform(BucketSize) - 1,
+            case lists:nth(SubIndex + 1, Bucket) of
+                Fingerprint ->
+                    {ok, {Index, Fingerprint}};
+                Evicted ->
+                    case update_in_bucket(Filter, Index, SubIndex, Evicted, Fingerprint) of
+                        ok -> {ok, {Index, Evicted}};
+                        {error, outdated} -> try_insert(Filter, Index, Fingerprint, force)
+                    end
+            end
+    end;
+try_insert(Filter, Index, Fingerprint, LockTimeout) ->
     case write_lock(Filter, LockTimeout) of
         ok ->
             Result =
-                force_insert(Filter, Index, Fingerprint, #{}, [], Filter#cuckoo_filter.bucket_size),
+                try_insert(Filter, Index, Fingerprint, #{}, [], Filter#cuckoo_filter.bucket_size),
             release_write_lock(Filter),
             Result;
         {error, timeout} ->
             {error, timeout}
     end.
 
-force_insert(_Filter, _Index, _Fingerprint, _Evictions, _EvictionsList, 0) ->
+try_insert(_Filter, _Index, _Fingerprint, _Evictions, _EvictionsList, 0) ->
     {error, not_enough_space};
-force_insert(
+try_insert(
     #cuckoo_filter{max_evictions = MaxEvictions},
     _Index,
     _Fingerprint,
     Evictions,
     _EvictionsList,
     _Retry
-) when map_size(Evictions) == MaxEvictions ->
+) when map_size(Evictions) > MaxEvictions ->
     {error, not_enough_space};
-force_insert(
+try_insert(
     Filter = #cuckoo_filter{
         bucket_size = BucketSize,
         num_buckets = NumBuckets,
@@ -392,42 +428,31 @@ force_insert(
     Retry
 ) ->
     Bucket = read_bucket(Index, Filter),
-    SubIndex = rand:uniform(BucketSize) - 1,
-    case lists:nth(SubIndex + 1, Bucket) of
-        0 ->
-            case insert_at_index(Filter, Index, Fingerprint) of
+    case find_in_bucket(Bucket, 0) of
+        {ok, SubIndex} ->
+            case update_in_bucket(Filter, Index, SubIndex, 0, Fingerprint) of
                 ok ->
                     persist_evictions(Filter, Evictions, EvictionsList, Fingerprint);
-                {error, full} ->
-                    force_insert(Filter, Index, Fingerprint, Evictions, EvictionsList, BucketSize)
+                {error, outdated} ->
+                    try_insert(Filter, Index, Fingerprint, Evictions, EvictionsList, Retry)
             end;
-        Fingerprint ->
-            force_insert(Filter, Index, Fingerprint, Evictions, EvictionsList, Retry - 1);
-        Evicted ->
-            AltIndex = alt_index(Index, Evicted, NumBuckets, HashFunction),
+        {error, not_found} ->
+            SubIndex = rand:uniform(BucketSize) - 1,
+            Evicted = lists:nth(SubIndex + 1, Bucket),
             Key = {Index, SubIndex},
             if
-                is_map_key(Key, Evictions) ->
-                    force_insert(Filter, Index, Fingerprint, Evictions, EvictionsList, Retry - 1);
+                Fingerprint == Evicted orelse is_map_key(Key, Evictions) ->
+                    try_insert(Filter, Index, Fingerprint, Evictions, EvictionsList, Retry - 1);
                 true ->
-                    case insert_at_index(Filter, AltIndex, Evicted) of
-                        ok ->
-                            persist_evictions(
-                                Filter,
-                                Evictions#{Key => Fingerprint},
-                                [Key | EvictionsList],
-                                Evicted
-                            );
-                        {error, full} ->
-                            force_insert(
-                                Filter,
-                                AltIndex,
-                                Evicted,
-                                Evictions#{Key => Fingerprint},
-                                [Key | EvictionsList],
-                                BucketSize
-                            )
-                    end
+                    AltIndex = alt_index(Index, Evicted, NumBuckets, HashFunction),
+                    try_insert(
+                        Filter,
+                        AltIndex,
+                        Evicted,
+                        Evictions#{Key => Fingerprint},
+                        [Key | EvictionsList],
+                        BucketSize
+                    )
             end
     end.
 
