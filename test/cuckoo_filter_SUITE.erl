@@ -14,6 +14,7 @@ all() ->
         new_capacity,
         new_with_hash128,
         new_with_args,
+        named_filter,
         add_contains_size,
         add_delete_contains_hash,
         adding_to_a_full_filter,
@@ -99,11 +100,13 @@ new_with_args(_Config) ->
         {bucket_size, BucketSize},
         {fingerprint_size, FingerprintSize},
         {max_evictions, MaxEvictions},
-        {hash_function, HashFunction}
+        {hash_function, HashFunction},
+        {name, my_filter}
     ]),
     RealCapacity = cuckoo_filter:capacity(Filter),
     NumBuckets = RealCapacity div BucketSize,
     MaxHash = NumBuckets bsl FingerprintSize - 1,
+    ?assertEqual(cuckoo_filter:whereis(my_filter), Filter),
     ?assert(RealCapacity >= Capacity),
     ?assertMatch(
         #cuckoo_filter{
@@ -116,6 +119,31 @@ new_with_args(_Config) ->
         },
         Filter
     ).
+
+named_filter(_Config) ->
+    Name = named_filter,
+    Capacity = rand:uniform(1000),
+    Filter = cuckoo_filter:new(Capacity, [{name, Name}]),
+    Element = an_element,
+    ?assertEqual(cuckoo_filter:whereis(Name), Filter),
+    ?assertEqual(ok, cuckoo_filter:add(Name, Element)),
+    ?assertEqual(ok, cuckoo_filter:add(Name, Element, infinity)),
+    ?assert(cuckoo_filter:contains(Name, Element)),
+    ?assertEqual(ok, cuckoo_filter:delete(Name, Element)),
+    ?assertEqual(ok, cuckoo_filter:delete(Name, Element, infinity)),
+    Hash = cuckoo_filter:hash(Name, Element),
+    ?assertEqual(ok, cuckoo_filter:add_hash(Name, Hash)),
+    ?assertEqual(ok, cuckoo_filter:add_hash(Name, Hash, infinity)),
+    ?assert(cuckoo_filter:contains_hash(Name, Hash)),
+    ?assertEqual(ok, cuckoo_filter:delete_hash(Name, Hash)),
+    ?assertEqual(ok, cuckoo_filter:delete_hash(Name, Hash, infinity)),
+    ?assertEqual(0, cuckoo_filter:size(Name)),
+    ?assert(cuckoo_filter:capacity(Name) >= Capacity),
+    [cuckoo_filter:add(Name, Element, force) || _ <- lists:seq(1, 100)],
+    {ok, {Index, Fingerprint}} = cuckoo_filter:add(Name, Element, force),
+    ?assert(cuckoo_filter:contains_fingerprint(Name, Index, Fingerprint)),
+    Data = cuckoo_filter:export(Name),
+    ?assertEqual(ok, cuckoo_filter:import(Name, Data)).
 
 add_contains_size(_Config) ->
     FingerprintSize = lists:nth(rand:uniform(4), [4, 8, 16, 32]),

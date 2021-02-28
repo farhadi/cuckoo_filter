@@ -18,6 +18,7 @@
     delete_hash/2, delete_hash/3,
     capacity/1,
     size/1,
+    whereis/1,
     export/1,
     import/2
 ]).
@@ -29,11 +30,13 @@
 
 -export_type([cuckoo_filter/0, hash/0]).
 
+-type filter_name() :: term().
 -type fingerprint() :: pos_integer().
 -type index() :: non_neg_integer().
 -type options() :: [option()].
 -type option() ::
-    {fingerprint_size, 4 | 8 | 16 | 32 | 64}
+    {name, filter_name()}
+    | {fingerprint_size, 4 | 8 | 16 | 32 | 64}
     | {bucket_size, pos_integer()}
     | {max_evictions, non_neg_integer()}
     | {hash_function, fun((binary()) -> hash())}.
@@ -42,6 +45,8 @@
 -define(DEFAULT_FINGERPRINT_SIZE, 16).
 -define(DEFAULT_BUCKET_SIZE, 4).
 -define(DEFAULT_EVICTIONS, 100).
+
+-define(FILTER(FilterName), persistent_term:get({?MODULE, FilterName})).
 
 %% @equiv new(Capacity, [])
 -spec new(pos_integer()) -> cuckoo_filter().
@@ -55,21 +60,29 @@ new(Capacity) ->
 %%
 %% Possible options are:
 %% <ul>
+%% <li>`{name, Name}'
+%% <p>If you give it a name, created filter instance will be stored in
+%% persistent_term, and later you can access the filter by its name.</p>
+%% </li>
 %% <li>`{fingerprint_size, FingerprintSize}'
 %% <p>FingerprintSize can be one of 4, 8, 16, 32, and 64 bits. Default fingerprint
 %% size is 16 bits.</p>
 %% </li>
-%% <li>`{bucket_size, BucketSize}'</li>
+%% <li>`{bucket_size, BucketSize}'
 %% <p>BucketSize must be a non negative integer, and the default value is 4.
 %% Higher bucket sizes can reduce insert time considerably since it reduces the number
 %% of relocations of existing fingerprints in occupied buckets, but it increases the
 %% lookup time, and false positive rate.</p>
-%% <li>`{max_evictions, MaxEvictions}'</li>
+%% </li>
+%% <li>`{max_evictions, MaxEvictions}'
 %% <p> MaxEvictions indicates the maximum number of relocation attemps before giving up
 %% when inserting a new element.</p>
-%% <li>`{hash_function, HashFunction}'</li>
-%% <p> You can specify a custom hash function that accepts a binary as argument and returns
-%% hash value as an integer.</p>
+%% </li>
+%% <li>`{hash_function, HashFunction}'
+%% <p> You can specify a custom hash function that accepts a binary as argument
+%% and returns hash value as an integer. By default xxh3 hash functions are used,
+%% and you need to manually add `xxh3' to the list of your project dependencies.</p>
+%% </li>
 %% </ul>
 -spec new(pos_integer(), options()) -> cuckoo_filter().
 new(Capacity, Opts) ->
@@ -88,7 +101,7 @@ new(Capacity, Opts) ->
     NumBuckets = 1 bsl ceil(math:log2(ceil(Capacity / BucketSize))),
     MaxHash = NumBuckets bsl FingerprintSize - 1,
     AtomicsSize = ceil(NumBuckets * BucketSize * FingerprintSize / 64) + 2,
-    #cuckoo_filter{
+    Filter = #cuckoo_filter{
         buckets = atomics:new(AtomicsSize, [{signed, false}]),
         num_buckets = NumBuckets,
         max_hash = MaxHash,
@@ -96,17 +109,28 @@ new(Capacity, Opts) ->
         fingerprint_size = FingerprintSize,
         max_evictions = MaxEvictions,
         hash_function = HashFunction
-    }.
+    },
+    case proplists:get_value(name, Opts) of
+        undefined ->
+            Filter;
+        FilterName ->
+            persistent_term:put({?MODULE, FilterName}, Filter),
+            Filter
+    end.
 
 %% @equiv add(Filter, Element, infinity)
--spec add(cuckoo_filter(), term()) -> ok | {error, not_enough_space}.
-add(Filter, Element) ->
-    add_hash(Filter, hash(Filter, Element), infinity).
+-spec add(cuckoo_filter() | filter_name(), term()) -> ok | {error, not_enough_space}.
+add(Filter = #cuckoo_filter{}, Element) ->
+    add_hash(Filter, hash(Filter, Element), infinity);
+add(FilterName, Element) ->
+    add(?FILTER(FilterName), Element).
 
 %% @equiv add_hash(Filter, Element, infinity)
--spec add_hash(cuckoo_filter(), hash()) -> ok | {error, not_enough_space}.
-add_hash(Filter, Hash) ->
-    add_hash(Filter, Hash, infinity).
+-spec add_hash(cuckoo_filter() | filter_name(), hash()) -> ok | {error, not_enough_space}.
+add_hash(Filter = #cuckoo_filter{}, Hash) ->
+    add_hash(Filter, Hash, infinity);
+add_hash(FilterName, Hash) ->
+    add_hash(?FILTER(FilterName), Hash, infinity).
 
 %% @doc Adds an element to a filter.
 %%
@@ -121,18 +145,24 @@ add_hash(Filter, Hash) ->
 %% is returned as `{ok, {Index, Fingerprint}}'. In this case, elements are not
 %% relocated, and no lock is acquired.
 -spec add
-    (cuckoo_filter(), term(), timeout()) -> ok | {error, not_enough_space | timeout};
-    (cuckoo_filter(), term(), force) -> ok | {ok, Evicted :: {index(), fingerprint()}}.
-add(Filter, Element, LockTimeout) ->
-    add_hash(Filter, hash(Filter, Element), LockTimeout).
+    (cuckoo_filter() | filter_name(), term(), timeout()) ->
+        ok | {error, not_enough_space | timeout};
+    (cuckoo_filter() | filter_name(), term(), force) ->
+        ok | {ok, Evicted :: {index(), fingerprint()}}.
+add(Filter = #cuckoo_filter{}, Element, LockTimeout) ->
+    add_hash(Filter, hash(Filter, Element), LockTimeout);
+add(FilterName, Element, LockTimeout) ->
+    add(?FILTER(FilterName), Element, LockTimeout).
 
 %% @doc Adds an element to a filter by its hash.
 %%
 %% Same as {@link add/3} except that it accepts the hash of the element instead
 %% of the element.
 -spec add_hash
-    (cuckoo_filter(), hash(), timeout()) -> ok | {error, not_enough_space | timeout};
-    (cuckoo_filter(), hash(), force) -> ok | {ok, Evicted :: {index(), fingerprint()}}.
+    (cuckoo_filter() | filter_name(), hash(), timeout()) ->
+        ok | {error, not_enough_space | timeout};
+    (cuckoo_filter() | filter_name(), hash(), force) ->
+        ok | {ok, Evicted :: {index(), fingerprint()}}.
 add_hash(
     Filter = #cuckoo_filter{
         fingerprint_size = FingerprintSize,
@@ -155,34 +185,47 @@ add_hash(
                     RandIndex = element(rand:uniform(2), {Index, AltIndex}),
                     try_insert(Filter, RandIndex, Fingerprint, LockTimeout)
             end
-    end.
+    end;
+add_hash(FilterName, Hash, LockTimeout) ->
+    add_hash(?FILTER(FilterName), Hash, LockTimeout).
 
 %% @doc Checks if an element is in a filter.
--spec contains(cuckoo_filter(), term()) -> boolean().
-contains(Filter, Element) ->
-    contains_hash(Filter, hash(Filter, Element)).
+-spec contains(cuckoo_filter() | filter_name(), term()) -> boolean().
+contains(Filter = #cuckoo_filter{}, Element) ->
+    contains_hash(Filter, hash(Filter, Element));
+contains(FilterName, Element) ->
+    contains(?FILTER(FilterName), Element).
 
 %% @doc Checks if an element is in a filter by its hash.
--spec contains_hash(cuckoo_filter(), hash()) -> boolean().
+-spec contains_hash(cuckoo_filter() | filter_name(), hash()) -> boolean().
 contains_hash(Filter = #cuckoo_filter{fingerprint_size = FingerprintSize}, Hash) ->
     {Index, Fingerprint} = index_and_fingerprint(Hash, FingerprintSize),
-    contains_fingerprint(Filter, Index, Fingerprint).
+    contains_fingerprint(Filter, Index, Fingerprint);
+contains_hash(FilterName, Hash) ->
+    contains_hash(?FILTER(FilterName), Hash).
 
 %% @doc Checks whether a filter contains a fingerprint at the given index or its alternative index.
+-spec contains_fingerprint(cuckoo_filter() | filter_name(), index(), fingerprint()) -> boolean().
 contains_fingerprint(Filter = #cuckoo_filter{max_evictions = 0}, Index, Fingerprint) ->
     contains_fingerprint(Filter, Index, undefined, Fingerprint, 1);
-contains_fingerprint(Filter, Index, Fingerprint) ->
-    contains_fingerprint(Filter, Index, undefined, Fingerprint, 2).
+contains_fingerprint(Filter = #cuckoo_filter{}, Index, Fingerprint) ->
+    contains_fingerprint(Filter, Index, undefined, Fingerprint, 2);
+contains_fingerprint(FilterName, Index, Fingerprint) ->
+    contains_fingerprint(?FILTER(FilterName), Index, Fingerprint).
 
 %% @equiv delete(Filter, Element, infinity)
--spec delete(cuckoo_filter(), term()) -> ok | {error, not_found}.
-delete(Filter, Element) ->
-    delete_hash(Filter, hash(Filter, Element), infinity).
+-spec delete(cuckoo_filter() | filter_name(), term()) -> ok | {error, not_found}.
+delete(Filter = #cuckoo_filter{}, Element) ->
+    delete_hash(Filter, hash(Filter, Element), infinity);
+delete(FilterName, Element) ->
+    delete(?FILTER(FilterName), Element).
 
 %% @equiv delete_hash(Filter, Element, infinity)
--spec delete_hash(cuckoo_filter(), hash()) -> ok | {error, not_found}.
-delete_hash(Filter, Hash) ->
-    delete_hash(Filter, Hash, infinity).
+-spec delete_hash(cuckoo_filter() | filter_name(), hash()) -> ok | {error, not_found}.
+delete_hash(Filter = #cuckoo_filter{}, Hash) ->
+    delete_hash(Filter, Hash, infinity);
+delete_hash(FilterName, Hash) ->
+    delete_hash(?FILTER(FilterName), Hash, infinity).
 
 %% @doc Deletes an element from a filter.
 %%
@@ -195,15 +238,19 @@ delete_hash(Filter, Hash) ->
 %% <b>Note:</b> A cuckoo filter can only delete items that are known to be
 %% inserted before. Deleting of non inserted items might lead to deletion of
 %% another random element.
--spec delete(cuckoo_filter(), term(), timeout()) -> ok | {error, not_found | timeout}.
-delete(Filter, Element, LockTimeout) ->
-    delete_hash(Filter, hash(Filter, Element), LockTimeout).
+-spec delete(cuckoo_filter() | filter_name(), term(), timeout()) ->
+    ok | {error, not_found | timeout}.
+delete(Filter = #cuckoo_filter{}, Element, LockTimeout) ->
+    delete_hash(Filter, hash(Filter, Element), LockTimeout);
+delete(FilterName, Element, LockTimeout) ->
+    delete(?FILTER(FilterName), Element, LockTimeout).
 
 %% @doc Deletes an element from a filter by its hash.
 %%
 %% Same as {@link delete/3} except that it uses the hash of the element instead
 %% of the element.
--spec delete_hash(cuckoo_filter(), hash(), timeout()) -> ok | {error, not_found | timeout}.
+-spec delete_hash(cuckoo_filter() | filter_name(), hash(), timeout()) ->
+    ok | {error, not_found | timeout}.
 delete_hash(
     Filter = #cuckoo_filter{
         fingerprint_size = FingerprintSize,
@@ -227,32 +274,49 @@ delete_hash(
             end;
         {error, timeout} ->
             {error, timeout}
-    end.
+    end;
+delete_hash(FilterName, Hash, LockTimeout) ->
+    delete_hash(?FILTER(FilterName), Hash, LockTimeout).
 
 %% @doc Returns the hash value of an element using the hash function of the filter.
--spec hash(cuckoo_filter(), term()) -> hash().
-hash(#cuckoo_filter{max_hash = MaxHash, hash_function = HashFunction}, Element) when
-    is_binary(Element)
-->
+-spec hash(cuckoo_filter() | filter_name(), term()) -> hash().
+hash(
+    #cuckoo_filter{
+        max_hash = MaxHash,
+        hash_function = HashFunction
+    },
+    Element
+) when is_binary(Element) ->
     HashFunction(Element) band MaxHash;
-hash(Filter, Element) ->
-    hash(Filter, term_to_binary(Element)).
+hash(Filter = #cuckoo_filter{}, Element) ->
+    hash(Filter, term_to_binary(Element));
+hash(FilterName, Element) ->
+    hash(?FILTER(FilterName), Element).
 
 %% @doc Returns the maximum capacity of a filter.
--spec capacity(cuckoo_filter()) -> pos_integer().
+-spec capacity(cuckoo_filter() | filter_name()) -> pos_integer().
 capacity(#cuckoo_filter{bucket_size = BucketSize, num_buckets = NumBuckets}) ->
-    NumBuckets * BucketSize.
+    NumBuckets * BucketSize;
+capacity(FilterName) ->
+    capacity(?FILTER(FilterName)).
 
 %% @doc Returns number of items in a filter.
--spec size(cuckoo_filter()) -> non_neg_integer().
+-spec size(cuckoo_filter() | filter_name()) -> non_neg_integer().
 size(#cuckoo_filter{buckets = Buckets}) ->
-    atomics:get(Buckets, 2).
+    atomics:get(Buckets, 2);
+size(FilterName) ->
+    ?MODULE:size(?FILTER(FilterName)).
+
+%% @doc Retrieves a cuckoo_filter from persistent_term by its name.
+-spec whereis(filter_name()) -> cuckoo_filter().
+whereis(FilterName) ->
+    ?FILTER(FilterName).
 
 %% @doc Exports a filter as a binary.
 %%
 %% Returned binary can be used to reconstruct the filter again, using
 %% {@link import/2} function.
--spec export(cuckoo_filter()) -> binary().
+-spec export(cuckoo_filter() | filter_name()) -> binary().
 export(Filter = #cuckoo_filter{buckets = Buckets}) ->
     ok = write_lock(Filter, infinity),
     AtomicsSize = maps:get(size, atomics:info(Buckets)),
@@ -261,13 +325,15 @@ export(Filter = #cuckoo_filter{buckets = Buckets}) ->
      || I <- lists:seq(2, AtomicsSize)
     >>,
     release_write_lock(Filter),
-    Result.
+    Result;
+export(FilterName) ->
+    export(?FILTER(FilterName)).
 
 %% @doc Imports filter data from a binary created using {@link export/1}.
 %%
 %% Returns ok if the import was successful, but could return {ok, invalid_data_size}
 %% if the size of the given binary does not match the size of the filter.
--spec import(cuckoo_filter(), binary()) -> ok | {error, invalid_data_size}.
+-spec import(cuckoo_filter() | filter_name(), binary()) -> ok | {error, invalid_data_size}.
 import(Filter = #cuckoo_filter{buckets = Buckets}, Data) when is_binary(Data) ->
     ByteSize = (maps:get(size, atomics:info(Buckets)) - 1) * 8,
     case byte_size(Data) of
@@ -277,7 +343,9 @@ import(Filter = #cuckoo_filter{buckets = Buckets}, Data) when is_binary(Data) ->
             release_write_lock(Filter);
         _ ->
             {error, invalid_data_size}
-    end.
+    end;
+import(FilterName, Data) ->
+    import(?FILTER(FilterName), Data).
 
 %%%-------------------------------------------------------------------
 %% Internal functions
