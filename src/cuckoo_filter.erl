@@ -182,8 +182,9 @@ add_hash(
                 ok ->
                     ok;
                 {error, full} ->
-                    RandIndex = element(rand:uniform(2), {Index, AltIndex}),
-                    try_insert(Filter, RandIndex, Fingerprint, LockTimeout)
+                    {Rand, RState} = rand:uniform_s(2, rand:seed_s(exsplus)),
+                    RandIndex = element(Rand, {Index, AltIndex}),
+                    try_insert(Filter, RandIndex, Fingerprint, RState, LockTimeout)
             end
     end;
 add_hash(FilterName, Hash, LockTimeout) ->
@@ -441,40 +442,50 @@ release_write_lock(#cuckoo_filter{max_evictions = 0}) ->
 release_write_lock(#cuckoo_filter{buckets = Buckets}) ->
     atomics:put(Buckets, 1, 0).
 
-try_insert(Filter = #cuckoo_filter{bucket_size = BucketSize}, Index, Fingerprint, force) ->
+try_insert(Filter = #cuckoo_filter{bucket_size = BucketSize}, Index, Fingerprint, RState, force) ->
     Bucket = read_bucket(Index, Filter),
-    SubIndex = rand:uniform(BucketSize) - 1,
-    case lists:nth(SubIndex + 1, Bucket) of
+    {Rand, UpdatedRState} = rand:uniform_s(BucketSize, RState),
+    SubIndex = Rand - 1,
+    case lists:nth(Rand, Bucket) of
         0 ->
             case update_in_bucket(Filter, Index, SubIndex, 0, Fingerprint) of
                 ok -> ok;
-                {error, outdated} -> try_insert(Filter, Index, Fingerprint, force)
+                {error, outdated} -> try_insert(Filter, Index, Fingerprint, UpdatedRState, force)
             end;
         Fingerprint ->
             {ok, {Index, Fingerprint}};
         Evicted ->
             case update_in_bucket(Filter, Index, SubIndex, Evicted, Fingerprint) of
                 ok -> {ok, {Index, Evicted}};
-                {error, outdated} -> try_insert(Filter, Index, Fingerprint, force)
+                {error, outdated} -> try_insert(Filter, Index, Fingerprint, UpdatedRState, force)
             end
     end;
-try_insert(Filter, Index, Fingerprint, LockTimeout) ->
+try_insert(Filter, Index, Fingerprint, RState, LockTimeout) ->
     case write_lock(Filter, LockTimeout) of
         ok ->
             Result =
-                try_insert(Filter, Index, Fingerprint, #{}, [], Filter#cuckoo_filter.bucket_size),
+                try_insert(
+                    Filter,
+                    Index,
+                    Fingerprint,
+                    RState,
+                    #{},
+                    [],
+                    Filter#cuckoo_filter.bucket_size
+                ),
             release_write_lock(Filter),
             Result;
         {error, timeout} ->
             {error, timeout}
     end.
 
-try_insert(_Filter, _Index, _Fingerprint, _Evictions, _EvictionsList, 0) ->
+try_insert(_Filter, _Index, _Fingerprint, _RState, _Evictions, _EvictionsList, 0) ->
     {error, not_enough_space};
 try_insert(
     #cuckoo_filter{max_evictions = MaxEvictions},
     _Index,
     _Fingerprint,
+    _RState,
     Evictions,
     _EvictionsList,
     _Retry
@@ -488,6 +499,7 @@ try_insert(
     },
     Index,
     Fingerprint,
+    RState,
     Evictions,
     EvictionsList,
     Retry
@@ -499,21 +511,31 @@ try_insert(
                 ok ->
                     persist_evictions(Filter, Evictions, EvictionsList, Fingerprint);
                 {error, outdated} ->
-                    try_insert(Filter, Index, Fingerprint, Evictions, EvictionsList, Retry)
+                    try_insert(Filter, Index, Fingerprint, RState, Evictions, EvictionsList, Retry)
             end;
         {error, not_found} ->
-            SubIndex = rand:uniform(BucketSize) - 1,
-            Evicted = lists:nth(SubIndex + 1, Bucket),
+            {Rand, UpdatedRState} = rand:uniform_s(BucketSize, RState),
+            SubIndex = Rand - 1,
+            Evicted = lists:nth(Rand, Bucket),
             Key = {Index, SubIndex},
             if
                 Fingerprint == Evicted orelse is_map_key(Key, Evictions) ->
-                    try_insert(Filter, Index, Fingerprint, Evictions, EvictionsList, Retry - 1);
+                    try_insert(
+                        Filter,
+                        Index,
+                        Fingerprint,
+                        UpdatedRState,
+                        Evictions,
+                        EvictionsList,
+                        Retry - 1
+                    );
                 true ->
                     AltIndex = alt_index(Index, Evicted, NumBuckets, HashFunction),
                     try_insert(
                         Filter,
                         AltIndex,
                         Evicted,
+                        UpdatedRState,
                         Evictions#{Key => Fingerprint},
                         [Key | EvictionsList],
                         BucketSize
