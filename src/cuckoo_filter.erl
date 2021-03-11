@@ -443,22 +443,19 @@ release_write_lock(#cuckoo_filter{buckets = Buckets}) ->
 
 try_insert(Filter = #cuckoo_filter{bucket_size = BucketSize}, Index, Fingerprint, force) ->
     Bucket = read_bucket(Index, Filter),
-    case find_in_bucket(Bucket, 0) of
-        {ok, SubIndex} ->
+    SubIndex = rand:uniform(BucketSize) - 1,
+    case lists:nth(SubIndex + 1, Bucket) of
+        0 ->
             case update_in_bucket(Filter, Index, SubIndex, 0, Fingerprint) of
                 ok -> ok;
                 {error, outdated} -> try_insert(Filter, Index, Fingerprint, force)
             end;
-        {error, not_found} ->
-            SubIndex = rand:uniform(BucketSize) - 1,
-            case lists:nth(SubIndex + 1, Bucket) of
-                Fingerprint ->
-                    {ok, {Index, Fingerprint}};
-                Evicted ->
-                    case update_in_bucket(Filter, Index, SubIndex, Evicted, Fingerprint) of
-                        ok -> {ok, {Index, Evicted}};
-                        {error, outdated} -> try_insert(Filter, Index, Fingerprint, force)
-                    end
+        Fingerprint ->
+            {ok, {Index, Fingerprint}};
+        Evicted ->
+            case update_in_bucket(Filter, Index, SubIndex, Evicted, Fingerprint) of
+                ok -> {ok, {Index, Evicted}};
+                {error, outdated} -> try_insert(Filter, Index, Fingerprint, force)
             end
     end;
 try_insert(Filter, Index, Fingerprint, LockTimeout) ->
