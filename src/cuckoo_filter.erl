@@ -390,7 +390,10 @@ delete_fingerprint(Filter, Fingerprint, Index) ->
     Bucket = read_bucket(Index, Filter),
     case find_in_bucket(Bucket, Fingerprint) of
         {ok, SubIndex} ->
-            ok = update_in_bucket(Filter, Index, SubIndex, Fingerprint, 0);
+            case update_in_bucket(Filter, Index, SubIndex, Fingerprint, 0) of
+                ok -> ok;
+                {error, outdated} -> delete_fingerprint(Filter, Fingerprint, Index)
+            end;
         {error, not_found} ->
             {error, not_found}
     end.

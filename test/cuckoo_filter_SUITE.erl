@@ -27,6 +27,7 @@ all() ->
         concurrent_delete,
         concurrent_add_delete,
         concurrent_add_delete_with_0_evictions,
+        concurrent_add_delete_forced,
         concurrent_add_same_item,
         lock_timeout
     ].
@@ -352,6 +353,31 @@ concurrent_add_delete_with_0_evictions(_Config) ->
         {'DOWN', Ref, process, Pid, normal} -> ok
     end,
     ?assertEqual(cuckoo_filter:size(Filter), length(Added)).
+
+concurrent_add_delete_forced(_Config) ->
+    Capacity = 128,
+    Filter = cuckoo_filter:new(Capacity, [{max_evictions, 0}, {fingerprint_size, 8}]),
+    Items = random_items(Capacity * 100),
+    Parent = self(),
+    [
+        spawn(fun() ->
+            Parent ! length([I || I <- Items, cuckoo_filter:add(Filter, I, force) == ok])
+        end)
+     || _ <- lists:seq(1, 10)
+    ],
+    [
+        spawn(fun() ->
+            Parent ! -length([I || I <- Items, cuckoo_filter:delete(Filter, I) == ok])
+        end)
+     || _ <- lists:seq(1, 10)
+    ],
+    AddsAndRemoves = [
+        receive
+            N -> N
+        end
+     || _ <- lists:seq(1, 20)
+    ],
+    ?assertEqual(lists:sum(AddsAndRemoves), cuckoo_filter:size(Filter)).
 
 concurrent_add_same_item(_Config) ->
     Filter = cuckoo_filter:new(100 + rand:uniform(1000)),
