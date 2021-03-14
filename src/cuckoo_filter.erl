@@ -145,7 +145,7 @@ add_hash(FilterName, Hash) ->
 %% is returned as `{ok, {Index, Fingerprint}}'. In this case, elements are not
 %% relocated, and no lock is acquired.
 %%
-%% Forced insertion can only be used with `max_evictions` set to 0.
+%% Forced insertion can only be used with `max_evictions' set to 0.
 -spec add
     (cuckoo_filter() | filter_name(), term(), timeout()) ->
         ok | {error, not_enough_space | timeout};
