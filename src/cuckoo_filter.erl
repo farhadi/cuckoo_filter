@@ -144,6 +144,8 @@ add_hash(FilterName, Hash) ->
 %% to be inserted, another random element is removed, and the removed element
 %% is returned as `{ok, {Index, Fingerprint}}'. In this case, elements are not
 %% relocated, and no lock is acquired.
+%%
+%% Forced insertion can only be used with `max_evictions` set to 0.
 -spec add
     (cuckoo_filter() | filter_name(), term(), timeout()) ->
         ok | {error, not_enough_space | timeout};
@@ -443,6 +445,7 @@ release_write_lock(#cuckoo_filter{buckets = Buckets}) ->
     atomics:put(Buckets, 1, 0).
 
 try_insert(Filter = #cuckoo_filter{bucket_size = BucketSize}, Index, Fingerprint, RState, force) ->
+    Filter#cuckoo_filter.max_evictions == 0 orelse error(badarg),
     Bucket = read_bucket(Index, Filter),
     {Rand, UpdatedRState} = rand:uniform_s(BucketSize, RState),
     SubIndex = Rand - 1,

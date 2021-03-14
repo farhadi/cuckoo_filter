@@ -139,6 +139,7 @@ named_filter(_Config) ->
     ?assertEqual(ok, cuckoo_filter:delete_hash(Name, Hash, infinity)),
     ?assertEqual(0, cuckoo_filter:size(Name)),
     ?assert(cuckoo_filter:capacity(Name) >= Capacity),
+    cuckoo_filter:new(Capacity, [{name, Name}, {max_evictions, 0}]),
     [cuckoo_filter:add(Name, Element, force) || _ <- lists:seq(1, 100)],
     {ok, {Index, Fingerprint}} = cuckoo_filter:add(Name, Element, force),
     ?assert(cuckoo_filter:contains_fingerprint(Name, Index, Fingerprint)),
@@ -212,7 +213,7 @@ adding_to_a_full_filter(_Config) ->
     ?assert(cuckoo_filter:size(Filter) < length(Items)).
 
 adding_to_a_full_filter_by_force(_Config) ->
-    Filter = cuckoo_filter:new(rand:uniform(1000)),
+    Filter = cuckoo_filter:new(rand:uniform(1000), [{max_evictions, 0}]),
     Capacity = cuckoo_filter:capacity(Filter),
     Items = random_items(Capacity * 10),
     lists:foreach(fun(I) -> cuckoo_filter:add(Filter, I) end, Items),
