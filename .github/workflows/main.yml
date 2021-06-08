@@ -10,23 +10,18 @@ jobs:
   build:
     name: OTP ${{matrix.otp}} / Rust ${{matrix.rust}}
     runs-on: ubuntu-latest
+
     strategy:
       matrix:
-        otp:
-          - 21.3
-          - 22.3
-          - 23.2
+        otp: [21, 22, 23, 24]
+        rust: [stable]
 
-        rust:
-          - stable
+    container:
+      image: erlang:${{matrix.otp}}
+
     steps:
       - name: Checkout sources
         uses: actions/checkout@v1
-
-      - name: Install Erlang
-        uses: gleam-lang/setup-erlang@v1.1.2
-        with:
-          otp-version: ${{matrix.otp}}
 
       - name: Install Rust ${{matrix.rust}} toolchain
         uses: actions-rs/toolchain@v1
