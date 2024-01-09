@@ -407,10 +407,10 @@ index_and_fingerprint(Hash, FingerprintSize) ->
     {Index, Fingerprint}.
 
 alt_index(Index, Fingerprint, NumBuckets, HashFunction) ->
-    Index bxor HashFunction(Fingerprint) rem NumBuckets.
+    Index bxor HashFunction(Fingerprint) band (NumBuckets - 1).
 
 atomic_index(BitIndex) ->
-    BitIndex div 64 + 3.
+    BitIndex bsr 6 + 3.
 
 insert_at_index(Filter, Index, Fingerprint) ->
     Bucket = read_bucket(Index, Filter),
@@ -585,7 +585,7 @@ read_bucket(
     BucketBitSize = BucketSize * FingerprintSize,
     BitIndex = Index * BucketBitSize,
     AtomicIndex = atomic_index(BitIndex),
-    SkipBits = BitIndex rem 64,
+    SkipBits = BitIndex band 63,
     EndIndex = atomic_index(BitIndex + BucketBitSize - 1),
     <<_:SkipBits, Bucket:BucketBitSize/bitstring, _/bitstring>> = <<
         <<(atomics:get(Buckets, I)):64/big-unsigned-integer>>
@@ -606,7 +606,7 @@ update_in_bucket(
 ) ->
     BitIndex = Index * BucketSize * FingerprintSize + SubIndex * FingerprintSize,
     AtomicIndex = atomic_index(BitIndex),
-    SkipBits = BitIndex rem 64,
+    SkipBits = BitIndex band 63,
     AtomicValue = atomics:get(Buckets, AtomicIndex),
     case <<AtomicValue:64/big-unsigned-integer>> of
         <<Prefix:SkipBits/bitstring, OldValue:FingerprintSize/big-unsigned-integer,
