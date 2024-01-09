@@ -290,10 +290,8 @@ hash(
         hash_function = HashFunction
     },
     Element
-) when is_binary(Element) ->
+) ->
     HashFunction(Element) band MaxHash;
-hash(Filter = #cuckoo_filter{}, Element) ->
-    hash(Filter, term_to_binary(Element));
 hash(FilterName, Element) ->
     hash(?FILTER(FilterName), Element).
 
@@ -356,9 +354,13 @@ import(FilterName, Data) ->
 %%%-------------------------------------------------------------------
 
 default_hash_function(Size) when Size > 64 ->
-    fun xxh3:hash128/1;
+    fun(Element) -> xxh3:hash128(term_to_binary(Element)) end;
+default_hash_function(Size) when Size > 32 ->
+    fun(Element) -> xxh3:hash64(term_to_binary(Element)) end;
+default_hash_function(Size) when Size > 27 ->
+    fun(Element) -> erlang:phash2(Element, 4294967296) end;
 default_hash_function(_Size) ->
-    fun xxh3:hash64/1.
+    fun erlang:phash2/1.
 
 import(_Buckets, <<>>, _Index) ->
     ok;
@@ -405,7 +407,7 @@ index_and_fingerprint(Hash, FingerprintSize) ->
     {Index, Fingerprint}.
 
 alt_index(Index, Fingerprint, NumBuckets, HashFunction) ->
-    Index bxor HashFunction(binary:encode_unsigned(Fingerprint)) rem NumBuckets.
+    Index bxor HashFunction(Fingerprint) rem NumBuckets.
 
 atomic_index(BitIndex) ->
     BitIndex div 64 + 3.
