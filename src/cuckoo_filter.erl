@@ -184,7 +184,8 @@ add_hash(
                 ok ->
                     ok;
                 {error, full} ->
-                    {Rand, RState} = rand:uniform_s(2, rand:seed_s(exsplus)),
+                    RState = rand:mwc59_seed(),
+                    Rand = rand:mwc59_value32(RState) bsr 31 + 1,
                     RandIndex = element(Rand, {Index, AltIndex}),
                     try_insert(Filter, RandIndex, Fingerprint, RState, LockTimeout)
             end
@@ -450,9 +451,9 @@ release_write_lock(#cuckoo_filter{buckets = Buckets}) ->
 try_insert(Filter = #cuckoo_filter{bucket_size = BucketSize}, Index, Fingerprint, RState, force) ->
     Filter#cuckoo_filter.max_evictions == 0 orelse error(badarg),
     Bucket = read_bucket(Index, Filter),
-    {Rand, UpdatedRState} = rand:uniform_s(BucketSize, RState),
-    SubIndex = Rand - 1,
-    case lists:nth(Rand, Bucket) of
+    UpdatedRState = rand:mwc59(RState),
+    SubIndex = (rand:mwc59_value32(UpdatedRState) * BucketSize) bsr 32,
+    case lists:nth(SubIndex + 1, Bucket) of
         0 ->
             case update_in_bucket(Filter, Index, SubIndex, 0, Fingerprint) of
                 ok -> ok;
@@ -520,9 +521,9 @@ try_insert(
                     try_insert(Filter, Index, Fingerprint, RState, Evictions, EvictionsList, Retry)
             end;
         {error, not_found} ->
-            {Rand, UpdatedRState} = rand:uniform_s(BucketSize, RState),
-            SubIndex = Rand - 1,
-            Evicted = lists:nth(Rand, Bucket),
+            UpdatedRState = rand:mwc59(RState),
+            SubIndex = (rand:mwc59_value32(UpdatedRState) * BucketSize) bsr 32,
+            Evicted = lists:nth(SubIndex + 1, Bucket),
             Key = {Index, SubIndex},
             if
                 Fingerprint == Evicted orelse is_map_key(Key, Evictions) ->
