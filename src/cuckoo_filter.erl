@@ -353,6 +353,8 @@ import(FilterName, Data) ->
 %% Internal functions
 %%%-------------------------------------------------------------------
 
+-dialyzer({nowarn_function, default_hash_function/1}).
+
 default_hash_function(Size) when Size > 64 ->
     fun(Element) -> xxh3:hash128(term_to_binary(Element)) end;
 default_hash_function(Size) when Size > 32 ->
