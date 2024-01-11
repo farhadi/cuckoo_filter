@@ -47,7 +47,7 @@ new(_Config) ->
     RealCapacity = cuckoo_filter:capacity(Filter),
     NumBuckets = RealCapacity div 4,
     MaxHash = NumBuckets bsl 16 - 1,
-    HashFunction = fun xxh3:hash64/1,
+    HashFunction = fun erlang:phash2/1,
     ?assert(RealCapacity >= Capacity),
     ?assertMatch(
         #cuckoo_filter{
@@ -77,7 +77,6 @@ new_with_hash128(_Config) ->
     RealCapacity = cuckoo_filter:capacity(Filter),
     NumBuckets = RealCapacity div 4,
     MaxHash = NumBuckets bsl 64 - 1,
-    HashFunction = fun xxh3:hash128/1,
     ?assert(RealCapacity >= Capacity),
     ?assertMatch(
         #cuckoo_filter{
@@ -85,11 +84,12 @@ new_with_hash128(_Config) ->
             num_buckets = NumBuckets,
             max_hash = MaxHash,
             fingerprint_size = 64,
-            max_evictions = 100,
-            hash_function = HashFunction
+            max_evictions = 100
         },
         Filter
-    ).
+    ),
+    HashFunction = Filter#cuckoo_filter.hash_function,
+    ?assertEqual(HashFunction(123), xxh3:hash128(term_to_binary(123))).
 
 new_with_args(_Config) ->
     Capacity = rand:uniform(1000),

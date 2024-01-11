@@ -184,7 +184,8 @@ add_hash(
                 ok ->
                     ok;
                 {error, full} ->
-                    {Rand, RState} = rand:uniform_s(2, rand:seed_s(exsplus)),
+                    RState = rand:mwc59_seed(),
+                    Rand = rand:mwc59_value32(RState) bsr 31 + 1,
                     RandIndex = element(Rand, {Index, AltIndex}),
                     try_insert(Filter, RandIndex, Fingerprint, RState, LockTimeout)
             end
@@ -289,10 +290,8 @@ hash(
         hash_function = HashFunction
     },
     Element
-) when is_binary(Element) ->
+) ->
     HashFunction(Element) band MaxHash;
-hash(Filter = #cuckoo_filter{}, Element) ->
-    hash(Filter, term_to_binary(Element));
 hash(FilterName, Element) ->
     hash(?FILTER(FilterName), Element).
 
@@ -354,10 +353,16 @@ import(FilterName, Data) ->
 %% Internal functions
 %%%-------------------------------------------------------------------
 
+-dialyzer({nowarn_function, default_hash_function/1}).
+
 default_hash_function(Size) when Size > 64 ->
-    fun xxh3:hash128/1;
+    fun(Element) -> xxh3:hash128(term_to_binary(Element)) end;
+default_hash_function(Size) when Size > 32 ->
+    fun(Element) -> xxh3:hash64(term_to_binary(Element)) end;
+default_hash_function(Size) when Size > 27 ->
+    fun(Element) -> erlang:phash2(Element, 4294967296) end;
 default_hash_function(_Size) ->
-    fun xxh3:hash64/1.
+    fun erlang:phash2/1.
 
 import(_Buckets, <<>>, _Index) ->
     ok;
@@ -404,10 +409,10 @@ index_and_fingerprint(Hash, FingerprintSize) ->
     {Index, Fingerprint}.
 
 alt_index(Index, Fingerprint, NumBuckets, HashFunction) ->
-    Index bxor HashFunction(binary:encode_unsigned(Fingerprint)) rem NumBuckets.
+    Index bxor HashFunction(Fingerprint) band (NumBuckets - 1).
 
 atomic_index(BitIndex) ->
-    BitIndex div 64 + 3.
+    BitIndex bsr 6 + 3.
 
 insert_at_index(Filter, Index, Fingerprint) ->
     Bucket = read_bucket(Index, Filter),
@@ -450,9 +455,9 @@ release_write_lock(#cuckoo_filter{buckets = Buckets}) ->
 try_insert(Filter = #cuckoo_filter{bucket_size = BucketSize}, Index, Fingerprint, RState, force) ->
     Filter#cuckoo_filter.max_evictions == 0 orelse error(badarg),
     Bucket = read_bucket(Index, Filter),
-    {Rand, UpdatedRState} = rand:uniform_s(BucketSize, RState),
-    SubIndex = Rand - 1,
-    case lists:nth(Rand, Bucket) of
+    UpdatedRState = rand:mwc59(RState),
+    SubIndex = (rand:mwc59_value32(UpdatedRState) * BucketSize) bsr 32,
+    case lists:nth(SubIndex + 1, Bucket) of
         0 ->
             case update_in_bucket(Filter, Index, SubIndex, 0, Fingerprint) of
                 ok -> ok;
@@ -520,9 +525,9 @@ try_insert(
                     try_insert(Filter, Index, Fingerprint, RState, Evictions, EvictionsList, Retry)
             end;
         {error, not_found} ->
-            {Rand, UpdatedRState} = rand:uniform_s(BucketSize, RState),
-            SubIndex = Rand - 1,
-            Evicted = lists:nth(Rand, Bucket),
+            UpdatedRState = rand:mwc59(RState),
+            SubIndex = (rand:mwc59_value32(UpdatedRState) * BucketSize) bsr 32,
+            Evicted = lists:nth(SubIndex + 1, Bucket),
             Key = {Index, SubIndex},
             if
                 Fingerprint == Evicted orelse is_map_key(Key, Evictions) ->
@@ -582,7 +587,7 @@ read_bucket(
     BucketBitSize = BucketSize * FingerprintSize,
     BitIndex = Index * BucketBitSize,
     AtomicIndex = atomic_index(BitIndex),
-    SkipBits = BitIndex rem 64,
+    SkipBits = BitIndex band 63,
     EndIndex = atomic_index(BitIndex + BucketBitSize - 1),
     <<_:SkipBits, Bucket:BucketBitSize/bitstring, _/bitstring>> = <<
         <<(atomics:get(Buckets, I)):64/big-unsigned-integer>>
@@ -603,7 +608,7 @@ update_in_bucket(
 ) ->
     BitIndex = Index * BucketSize * FingerprintSize + SubIndex * FingerprintSize,
     AtomicIndex = atomic_index(BitIndex),
-    SkipBits = BitIndex rem 64,
+    SkipBits = BitIndex band 63,
     AtomicValue = atomics:get(Buckets, AtomicIndex),
     case <<AtomicValue:64/big-unsigned-integer>> of
         <<Prefix:SkipBits/bitstring, OldValue:FingerprintSize/big-unsigned-integer,
