@@ -1,1 +1,8 @@
-[].
+{"1.2.0",
+[{<<"spinlock">>,{pkg,<<"spinlock">>,<<"0.2.1">>},0}]}.
+[
+{pkg_hash,[
+ {<<"spinlock">>, <<"0B19C946EE7C3F005B1FF856F712352540095DD823EE03F5352D9818602E9D60">>}]},
+{pkg_hash_ext,[
+ {<<"spinlock">>, <<"1A7FA7EFD642C1D36EC253D3C6EF6A50863B3E934318404A29F418564D68981B">>}]}
+].

@@ -1,5 +1,6 @@
 -record(cuckoo_filter, {
     buckets :: atomics:atomics_ref(),
+    lock :: spinlock:spinlock(),
     num_buckets :: pos_integer(),
     max_hash :: pos_integer(),
     bucket_size :: pos_integer(),
