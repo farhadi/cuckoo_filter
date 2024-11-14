@@ -13,8 +13,8 @@ jobs:
 
     strategy:
       matrix:
-        otp: [25, 26]
-        rebar3: [3.22.1]
+        otp: [25, 26, 27]
+        rebar3: [3.24.0]
         rust: [stable]
 
     steps:
