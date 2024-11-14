@@ -39,7 +39,7 @@
     | {fingerprint_size, 4 | 8 | 16 | 32 | 64}
     | {bucket_size, pos_integer()}
     | {max_evictions, non_neg_integer()}
-    | {hash_function, fun((binary()) -> hash())}.
+    | {hash_function, fun((term()) -> hash())}.
 
 %% Default configurations
 -define(DEFAULT_FINGERPRINT_SIZE, 16).
@@ -92,9 +92,11 @@ new(Capacity) ->
 %% when inserting a new element.</p>
 %% </li>
 %% <li>`{hash_function, HashFunction}'
-%% <p> You can specify a custom hash function that accepts a binary as argument
-%% and returns hash value as an integer. By default xxh3 hash functions are used,
-%% and you need to manually add `xxh3' to the list of your project dependencies.</p>
+%% <p> You can specify a custom hash function that accepts any term as argument
+%% and returns an integer hash value. When choosing a hash function, ensure the hash size
+%% is equal or greater than the sum of the fingerprint and bucket sizes.
+%% By default, `erlang:phash2' is used. If a 32bit hash is insufficient, xxh3 hash functions
+%% are applied, which require adding `xxh3' to your project dependencies manually.</p>
 %% </li>
 %% </ul>
 -spec new(pos_integer(), options()) -> cuckoo_filter().
@@ -363,9 +365,15 @@ import(FilterName, Data) ->
 -dialyzer({nowarn_function, default_hash_function/1}).
 
 default_hash_function(Size) when Size > 64 ->
-    fun(Element) -> xxh3:hash128(term_to_binary(Element)) end;
+    fun
+        (Element) when is_binary(Element) -> xxh3:hash128(Element);
+        (Element) -> xxh3:hash128(term_to_binary(Element))
+    end;
 default_hash_function(Size) when Size > 32 ->
-    fun(Element) -> xxh3:hash64(term_to_binary(Element)) end;
+    fun
+        (Element) when is_binary(Element) -> xxh3:hash64(Element);
+        (Element) -> xxh3:hash64(term_to_binary(Element))
+    end;
 default_hash_function(Size) when Size > 27 ->
     fun(Element) -> erlang:phash2(Element, 4294967296) end;
 default_hash_function(_Size) ->

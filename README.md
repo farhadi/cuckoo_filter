@@ -11,65 +11,70 @@ implemented using [atomics](https://erlang.org/doc/man/atomics.html) for Erlang 
 
 ## Introduction
 
-A Cuckoo Filter is a space-efficient probabilistic data structure for approximated
-set-membership queries. It can be used to test whether an element is a member of a set in
-constant time and requires only a few bits per element. The trade-off is that a low rate
-of false positives is possible, but false negatives are not.
+A **Cuckoo Filter** is a space-efficient probabilistic data structure for approximate
+set membership queries. It enables constant-time checks to determine if an element
+is in a set, using only a few bits per element. This efficiency comes with a trade-off:
+a low rate of false positives may occur, but false negatives are guaranteed not to happen.
 
-Cuckoo Filter is considered a better alternative to Bloom Filter with lower space
-overhead and with support for deletion of inserted elements.
+Compared to a **Bloom Filter**, a Cuckoo Filter offers a more efficient use of space and
+supports the deletion of inserted elements. However, as the filter's load factor increases,
+insertion operations may become slower and could fail once the filter is nearly full.
 
-Insertion of elements in a cuckoo filter becomes slowers when the load factor is high and
-might fail when capacity is nearly full.
+## Implementation Details
 
-## Implementation
+In this implementation, filter data is stored in an `atomics` array, a fixed-size, mutable
+array of 64-bit integers. Using atomics enables fast, concurrent access to the filter
+for both reading and writing operations.
 
-In this implementation, filter data is stored in an atomics array, which is a fixed-size
-mutable array of 64-bit integers. By using atomics we can have fast and concurrent
-access to the filter for both reads and writes.
+The first two integers in the atomics array act as a lock to prevent race conditions
+during relocatiion of elements.
 
-To be able to update fingerprints atomically, this implementation only allows fingerprint
-sizes of 4, 8, 16, 32, and 64 bits, so that multiple fingerprints can fit in a single
+The third integer acts as an atomic counter to track the number of elements in the filter.
+
+### Fingerprint Constraints
+
+To ensure atomic updates for fingerprints, this implementation only supports fingerprint
+sizes of **4, 8, 16, 32, and 64 bits**—allowing multiple fingerprints to fit within a single
 64-bit atomic integer.
 
-In a Cuckoo Filter for each element, there are two buckets where it can be inserted. To
-insert an element when there is an empty slot available in one of the two buckets, we
-can atomically update that empty entry, but when there is no slot available in the two
-buckets we have to relocate exiting elements to make room for the new one. In this case,
-since multiple entries need to be updated, we no longer can do insert operation
-atomically, and such inserts can not be done concurrently. In such cases, to prevent
-race conditions we use the first integer in the atomics array as a mutex.
+### Insertion
 
-Deletes are also done with a lock to prevent race conditions when an insert is relocating
-elements.
+Each element in a Cuckoo Filter can be placed in one of two possible buckets. If an empty
+slot is available in either bucket, it is updated atomically. However, if both buckets
+are full, elements need to be relocated to make room for the new one. In such cases,
+atomic updates for all entries are not feasible, and insertions cannot be concurrent.
+To manage this, a [spin lock](https://github.com/farhadi/spinlock) (using the first two
+integers in the atomics array) prevents race conditions during these operations.
 
-When relocating existing elements, it is also possible that a concurrent lookup of an
-evicted element fails. To prevent this, instead of immediately updating an evicted
-element, we keep a sequence of evictions in memory, and once we find an empty slot we
-start applying the changes in the sequence from the end to the beginning. In other words,
-to relocate an element, we first insert it in its new place, then we remove it from its
-old place, making sure the element is always available to lookups.
+To maintain availability for lookups during element relocation, this implementation uses
+an eviction cache. When relocating elements, the filter temporarily stores a sequence of
+evictions. Once an empty slot is identified, changes are applied in reverse order,
+ensuring that elements remain accessible for lookups throughout the relocation process.
+Unlike many traditional Cuckoo Filter implementations, where inserting a new element
+when the filter is full may lead to the removal of a random existing element,
+this eviction cache technique helps avoid such unintended removals.
 
-In most cuckoo filter implementations, when an insert fails, the element is actually
-added to the filter, but some other random element gets removed, but in this
-implementation, by using this eviction cache technique we can also avoid the removal
-of a random element when an insertion fails.
+The eviction cache also provides early detection of loops, helping prevent excessive
+evictions.
 
-Another benefit of keeping the chain of evictions in memory is the early detection of
-loops before reaching the maximum number of evictions.
+### Deletion
 
-The second integer in the array is used as an atomic counter to store the number of
-elements inserted in the filter. 
+Deletion operations also utilize a lock to avoid race conditions when elements are
+being relocated.
 
-For hashing, by default 64-bit variant of [XXH3](https://github.com/farhadi/xxh3) is used.
+## Configurations
 
-Fingerprint size, bucket size, hash function, and the maximum number of evictions are
-configurable when creating a new filter.
+You can customize the fingerprint size, bucket size, hash function, and the maximum
+number of evictions when creating a new filter.
+
+By default, this implementation uses `erlang:phash2` for hashing. If a 32bit hash is
+insufficient, [XXH3](https://github.com/farhadi/xxh3) hash functions are applied,
+which require adding `xxh3` to your project dependencies manually.
+
+When using a custom hash function, ensure that the hash output length meets or exceeds
+the sum of the fingerprint and bucket sizes.
 
 ## Usage
-
-If you want to use the default xxh3 hash functions, you need to add
-[xxh3](https://hex.pm/packages/xxh3) to your deps.
 
 In Erlang
 
@@ -93,7 +98,7 @@ false = :cuckoo_filter.contains(filter, 2)
 {:error, :not_found} = :cuckoo_filter.delete(filter, 1)
 ```
 
-For more details, see the module documentation.
+For more details, see the [Hex documentation](https://hexdocs.pm/cuckoo_filter).
 
 ## License
 

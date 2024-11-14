@@ -1,7 +1,7 @@
 {application, cuckoo_filter, [
     {description,
         "A high-performance, concurrent, and mutable Cuckoo Filter for Erlang and Elixir"},
-    {vsn, "1.0.0"},
+    {vsn, "1.0.1"},
     {registered, []},
     {applications, [
         kernel,
